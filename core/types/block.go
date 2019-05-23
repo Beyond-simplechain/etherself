@@ -124,7 +124,8 @@ type Body struct {
 
 // Block represents an entire block in the Ethereum blockchain.
 type Block struct {
-	header       *Header
+	header *Header
+	//:Body
 	uncles       []*Header
 	transactions Transactions
 
@@ -134,6 +135,7 @@ type Block struct {
 
 	// Td is used by package core to store the total difficulty
 	// of the chain up to and including the block.
+	//:总难度，从第一个块到此块的难度总和
 	td *big.Int
 
 	// These fields are used by package eth to track

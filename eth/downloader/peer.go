@@ -59,9 +59,9 @@ type peerConnection struct {
 	receiptThroughput float64 // Number of receipts measured to be retrievable per second
 	stateThroughput   float64 // Number of node data pieces measured to be retrievable per second
 
-	rtt time.Duration // Request round trip time to track responsiveness (QoS)
+	rtt time.Duration //:请求回应时间 Request round trip time to track responsiveness (QoS)
 
-	headerStarted  time.Time // Time instance when the last header fetch was started
+	headerStarted  time.Time //:记录最后一个header fetch的请求开始时间 Time instance when the last header fetch was started
 	blockStarted   time.Time // Time instance when the last block (body) fetch was started
 	receiptStarted time.Time // Time instance when the last receipt fetch was started
 	stateStarted   time.Time // Time instance when the last node data fetch was started

@@ -81,9 +81,9 @@ type ProtocolManager struct {
 
 	downloader *downloader.Downloader
 	fetcher    *fetcher.Fetcher
-	peers      *peerSet
+	peers      *peerSet //:p2p节点
 
-	SubProtocols []p2p.Protocol
+	SubProtocols []p2p.Protocol //:子协议
 
 	eventMux      *event.TypeMux
 	txsCh         chan core.NewTxsEvent
@@ -100,7 +100,7 @@ type ProtocolManager struct {
 
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
-	wg sync.WaitGroup
+	wg sync.WaitGroup //:等待peer处理完毕
 }
 
 // NewProtocolManager returns a new Ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
@@ -174,12 +174,15 @@ func NewProtocolManager(config *params.ChainConfig, mode downloader.SyncMode, ne
 	// Construct the different synchronisation mechanisms
 	manager.downloader = downloader.New(mode, manager.checkpointNumber, chaindb, manager.eventMux, blockchain, nil, manager.removePeer)
 
+	//:fetcher区块头校验器注入
 	validator := func(header *types.Header) error {
 		return engine.VerifyHeader(blockchain, header, true)
 	}
+	//:fetcher获取链高度函数注入
 	heighter := func() uint64 {
 		return blockchain.CurrentBlock().NumberU64()
 	}
+	//:fetcher插入链函数注入
 	inserter := func(blocks types.Blocks) (int, error) {
 		// If fast sync is running, deny importing weird blocks
 		if atomic.LoadUint32(&manager.fastSync) == 1 {
@@ -261,6 +264,7 @@ func (pm *ProtocolManager) newPeer(pv int, p *p2p.Peer, rw p2p.MsgReadWriter) *p
 
 // handle is the callback invoked to manage the life cycle of an eth peer. When
 // this function terminates, the peer is disconnected.
+//:p2p.server.run() -> p2p.peer.run() -> protocol.Run()
 func (pm *ProtocolManager) handle(p *peer) error {
 	// Ignore maxPeers if this is a trusted peer
 	if pm.peers.Len() >= pm.maxPeers && !p.Peer.Info().Network.Trusted {
@@ -324,6 +328,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		}
 	}
 	// Handle incoming messages until the connection is torn down
+	//:处理消息主循环
 	for {
 		if err := pm.handleMsg(p); err != nil {
 			p.Log().Debug("Ethereum message handling failed", "err", err)
@@ -460,6 +465,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 		// Filter out any explicitly requested headers, deliver the rest to the downloader
+		//:过滤出任何非常明确的请求(如果只有1个header，任务它是名确的)，然后把剩下的投递给downloader
 		filter := len(headers) == 1
 		if filter {
 			// If it's a potential sync progress check, validate the content and advertised chain weight
@@ -483,6 +489,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				p.Log().Debug("Whitelist block verified", "number", headers[0].Number.Uint64(), "hash", want)
 			}
 			// Irrelevant of the fork checks, send the header to the fetcher just in case
+			//:和分叉无关的header，就通过Fetcher过滤，并返回需要继续处理的header，投递给Downloader
 			headers = pm.fetcher.FilterHeaders(p.id, headers, time.Now())
 		}
 		if len(headers) > 0 || !filter {
@@ -534,6 +541,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			uncles[i] = body.Uncles
 		}
 		// Filter out any explicitly requested bodies, deliver the rest to the downloader
+		//:名确的body交给Fetcher，剩下的交给Downloader
 		filter := len(transactions) > 0 || len(uncles) > 0
 		if filter {
 			transactions, uncles = pm.fetcher.FilterBodies(p.id, transactions, uncles, time.Now())
@@ -677,6 +685,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			// a single block (as the true TD is below the propagated block), however this
 			// scenario should easily be covered by the fetcher.
 			currentBlock := pm.blockchain.CurrentBlock()
+			//:TD更大则同步来自peer的链
 			if trueTD.Cmp(pm.blockchain.GetTd(currentBlock.Hash(), currentBlock.NumberU64())) > 0 {
 				go pm.synchronise(p)
 			}

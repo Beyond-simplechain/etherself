@@ -465,19 +465,21 @@ func (hc *HeaderChain) SetHead(head uint64, delFn DeleteCallback) {
 	for hdr := hc.CurrentHeader(); hdr != nil && hdr.Number.Uint64() > head; hdr = hc.CurrentHeader() {
 		hash := hdr.Hash()
 		num := hdr.Number.Uint64()
+		//:删除当前header
 		if delFn != nil {
 			delFn(batch, hash, num)
 		}
 		rawdb.DeleteHeader(batch, hash, num)
 		rawdb.DeleteTd(batch, hash, num)
 
+		//:将父块hash设置为当前header
 		hc.currentHeader.Store(hc.GetHeader(hdr.ParentHash, hdr.Number.Uint64()-1))
 	}
 	// Roll back the canonical chain numbering
 	for i := height; i > head; i-- {
 		rawdb.DeleteCanonicalHash(batch, i)
 	}
-	batch.Write()
+	batch.Write() //: commit batch
 
 	// Clear out any stale content from the caches
 	hc.headerCache.Purge()

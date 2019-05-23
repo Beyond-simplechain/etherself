@@ -74,7 +74,7 @@ type stateObject struct {
 	dbErr error
 
 	// Write caches.
-	trie Trie // storage trie, which becomes non-nil on first access
+	trie Trie // storage trie, which becomes non-nil on first access //:每个用户的Mercle Trie,第一次访问时初始化为非空
 	code Code // contract bytecode, which gets set when code is loaded
 
 	originStorage Storage // Storage cache of original entries to dedup rewrites
@@ -296,6 +296,7 @@ func (self *stateObject) setBalance(amount *big.Int) {
 // Return the gas back to the origin. Used by the Virtual machine or Closures
 func (c *stateObject) ReturnGas(gas *big.Int) {}
 
+//:stateObject的深拷贝
 func (self *stateObject) deepCopy(db *StateDB) *stateObject {
 	stateObject := newObject(db, self.address, self.data)
 	if self.trie != nil {

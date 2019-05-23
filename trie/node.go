@@ -34,13 +34,13 @@ type node interface {
 }
 
 type (
-	fullNode struct {
+	fullNode struct { //:分支节点
 		Children [17]node // Actual trie node data to encode/decode (needs custom encoder)
-		flags    nodeFlag
+		flags    nodeFlag //:包含cachegen，此node可以被lru算法移除缓存
 	}
 	shortNode struct {
 		Key   []byte
-		Val   node
+		Val   node //:valueNode则此shortNode为叶子节点，否则为扩展节点
 		flags nodeFlag
 	}
 	hashNode  []byte

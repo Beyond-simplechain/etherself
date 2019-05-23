@@ -20,6 +20,7 @@ package downloader
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/debug.prints"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -238,7 +239,7 @@ func New(mode SyncMode, checkpoint uint64, stateDb ethdb.Database, mux *event.Ty
 		trackStateReq: make(chan *stateReq),
 	}
 	go dl.qosTuner()
-	go dl.stateFetcher()
+	go dl.stateFetcher() //:stateSync的loop
 	return dl
 }
 
@@ -354,6 +355,7 @@ func (d *Downloader) synchronise(id string, hash common.Hash, td *big.Int, mode 
 		return d.synchroniseMock(id, hash)
 	}
 	// Make sure only one goroutine is ever allowed past this point at once
+	//:确保此方法只能同时运行一个
 	if !atomic.CompareAndSwapInt32(&d.synchronising, 0, 1) {
 		return errBusy
 	}
@@ -367,12 +369,14 @@ func (d *Downloader) synchronise(id string, hash common.Hash, td *big.Int, mode 
 	d.queue.Reset()
 	d.peers.Reset()
 
+	//:清空bodyWakeCh、receiptWakeCh
 	for _, ch := range []chan bool{d.bodyWakeCh, d.receiptWakeCh} {
 		select {
 		case <-ch:
 		default:
 		}
 	}
+	//:清空headerCh、bodyCh、receiptCh
 	for _, ch := range []chan dataPack{d.headerCh, d.bodyCh, d.receiptCh} {
 		for empty := false; !empty; {
 			select {
@@ -436,7 +440,8 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td *big.I
 	}
 	height := latest.Number.Uint64()
 
-	origin, err := d.findAncestor(p, latest)
+	//:寻找本地链和同步链的共同祖先，确定开始插入块的父块
+	origin, err := d.findAncestor(p, latest) //:origin为起始可插入高度
 	if err != nil {
 		return err
 	}
@@ -469,7 +474,9 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td *big.I
 		d.syncInitHook(origin, height)
 	}
 
+	//:启动几个fetcher的loop，分别负责header、body、receipt和处理header。(WARN，此处fetcher和eth/fetcher中的Fetcher含义不同)
 	fetchers := []func() error{
+		//:从origin+1块高度请求header、body、receipt
 		func() error { return d.fetchHeaders(p, origin+1, pivot) }, // Headers are always retrieved
 		func() error { return d.fetchBodies(origin + 1) },          // Bodies are retrieved during normal and fast sync
 		func() error { return d.fetchReceipts(origin + 1) },        // Receipts are retrieved during fast sync
@@ -480,7 +487,7 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td *big.I
 	} else if d.mode == FullSync {
 		fetchers = append(fetchers, d.processFullSyncContent)
 	}
-	return d.spawnSync(fetchers)
+	return d.spawnSync(fetchers) //:给以上每个fetcher启动一个goroutine, 然后阻塞的等待fetcher出错
 }
 
 // spawnSync runs d.process and all given fetcher functions to completion in
@@ -557,6 +564,7 @@ func (d *Downloader) fetchHeight(p *peerConnection) (*types.Header, error) {
 
 	// Request the advertised remote head block and wait for the response
 	head, _ := p.peer.Head()
+	//:向peer发送请求header
 	go p.peer.RequestHeadersByHash(head, 1, 0, false)
 
 	ttl := d.requestTTL()
@@ -566,6 +574,7 @@ func (d *Downloader) fetchHeight(p *peerConnection) (*types.Header, error) {
 		case <-d.cancelCh:
 			return nil, errCancelBlockFetch
 
+		//:获取请求返回值
 		case packet := <-d.headerCh:
 			// Discard anything not from the origin peer
 			if packet.PeerId() != p.id {
@@ -862,6 +871,10 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 // other peers are only accepted if they map cleanly to the skeleton. If no one
 // can fill in the skeleton - not even the origin peer - it's assumed invalid and
 // the origin is dropped.
+//:fetchHeaders不断的重复这样的操作，发送header请求，等待所有的返回。直到完成所有的header请求。
+//:为了提高并发性，同时仍然能够防止恶意节点发送错误的header，我们使用我们正在同步的“origin”peer
+//:构造一个头文件链骨架，并使用其他人填充缺失的header。其他peer的header只有在干净地映射到骨架上时
+//:才被接受。如果没有人能够填充骨架，甚至origin peer也不能填充，它被认为是无效的，并且origin peer也被丢弃。
 func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) error {
 	p.log.Debug("Directing header downloads", "origin", from)
 	defer p.log.Debug("Header download terminated")
@@ -874,6 +887,11 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 	defer timeout.Stop()
 
 	var ttl time.Duration
+	//:1、getHeaders()调用peer.RequestHeadersByNumber()方法 获取网络节点的headers。
+	//:2、有两种获取方式，首先走的是skeleton方式，从查找到的共同祖先区块+192个区块位置开始，每隔192个区块，获取128个区块头。非skeleton方式，从共同祖先区块开始，获取192个区块头。
+	//:3、如果第一种方式获取不到区块头，则执行第二种获取方式，如果第二种方式还是没有获取到区块头的话，直接返回
+	//:4、如果是skeleton获取到的，调用fillHeaderSkeleton()方法加入到skeleton header chain
+	//:5、然后调整from值，再递归调用getHeaders()方法
 	getHeaders := func(from uint64) {
 		request = time.Now()
 
@@ -896,6 +914,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 		case <-d.cancelCh:
 			return errCancelHeaderFetch
 
+		//:send by ProtocolManager.handleMsg() -> this.DeliverHeaders()
 		case packet := <-d.headerCh:
 			// Make sure the active peer is giving us the skeleton headers
 			if packet.PeerId() != p.id {
@@ -912,6 +931,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 				continue
 			}
 			// If no more headers are inbound, notify the content fetchers and return
+			//:如果peer没有返回headers，直接将nil写入headerProcCh
 			if packet.Items() == 0 {
 				// Don't abort header fetches while the pivot is downloading
 				if atomic.LoadInt32(&d.committed) == 0 && pivot <= from {
@@ -970,9 +990,11 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 				}
 			}
 			// Insert all the new headers and fetch the next batch
+			//:把新headers写入headerProcCh，有processHeaders来处理
 			if len(headers) > 0 {
 				p.log.Trace("Scheduling new headers", "count", len(headers), "from", from)
 				select {
+
 				case d.headerProcCh <- headers:
 				case <-d.cancelCh:
 					return errCancelHeaderFetch
@@ -1030,6 +1052,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 // already forwarded for processing.
 func (d *Downloader) fillHeaderSkeleton(from uint64, skeleton []*types.Header) ([]*types.Header, int, error) {
 	log.Debug("Filling up skeleton", "from", from)
+	//:a) 把skeleton的headers加入queue.ScheduleSkeleton调度队列
 	d.queue.ScheduleSkeleton(from, skeleton)
 
 	var (
@@ -1046,12 +1069,19 @@ func (d *Downloader) fillHeaderSkeleton(from uint64, skeleton []*types.Header) (
 		capacity = func(p *peerConnection) int { return p.HeaderCapacity(d.requestRTT()) }
 		setIdle  = func(p *peerConnection, accepted int) { p.SetHeadersIdle(accepted) }
 	)
+
+	//:b) 然后执行d.fetchParts()方法。
+	//:1，对收到的headers执行d.queue.DeliverHeaders()方法。
+	//:2，如果d.queue.PendingHeaders有pending的headers，调用d.peers.HeaderIdlePeers获取到idle的peers
+	//:3，调用d.queue.ReserveHeaders把pending的headers储备到idle的peers里面
+	//:4，用idle的peers调用p.FetchHeaders(req.From, MaxHeaderFetch)去获取headers
 	err := d.fetchParts(errCancelHeaderFetch, d.headerCh, deliver, d.queue.headerContCh, expire,
 		d.queue.PendingHeaders, d.queue.InFlightHeaders, throttle, reserve,
 		nil, fetch, d.queue.CancelHeaders, capacity, d.peers.HeaderIdlePeers, setIdle, "headers")
 
 	log.Debug("Skeleton fill terminated", "err", err)
 
+	//:c) 最后执行d.queue.RetrieveHeaders()，获取到filled进去的headers
 	filled, proced := d.queue.RetrieveHeaders()
 	return filled, proced, err
 }
@@ -1083,6 +1113,7 @@ func (d *Downloader) fetchBodies(from uint64) error {
 // fetchReceipts iteratively downloads the scheduled block receipts, taking any
 // available peers, reserving a chunk of receipts for each, waiting for delivery
 // and also periodically checking for timeouts.
+//:领取blockTaskQueue中的header，请求获取receipt后存入receiptCh
 func (d *Downloader) fetchReceipts(from uint64) error {
 	log.Debug("Downloading transaction receipts", "origin", from)
 
@@ -1113,22 +1144,22 @@ func (d *Downloader) fetchReceipts(from uint64) error {
 // various callbacks to handle the slight differences between processing them.
 //
 // The instrumentation parameters:
-//  - errCancel:   error type to return if the fetch operation is cancelled (mostly makes logging nicer)
-//  - deliveryCh:  channel from which to retrieve downloaded data packets (merged from all concurrent peers)
-//  - deliver:     processing callback to deliver data packets into type specific download queues (usually within `queue`)
-//  - wakeCh:      notification channel for waking the fetcher when new tasks are available (or sync completed)
-//  - expire:      task callback method to abort requests that took too long and return the faulty peers (traffic shaping)
-//  - pending:     task callback for the number of requests still needing download (detect completion/non-completability)
-//  - inFlight:    task callback for the number of in-progress requests (wait for all active downloads to finish)
-//  - throttle:    task callback to check if the processing queue is full and activate throttling (bound memory use)
-//  - reserve:     task callback to reserve new download tasks to a particular peer (also signals partial completions)
+//  - errCancel:   error type to return if the fetch operation is cancelled (mostly makes logging nicer) 如果fetch操作被取消，会在这个通道上发送数据
+//  - deliveryCh:  channel from which to retrieve downloaded data packets (merged from all concurrent peers) 数据被下载完成后投递的目的地
+//  - deliver:     processing callback to deliver data packets into type specific download queues (usually within `queue`) 处理完成后数据被投递到哪个队列
+//  - wakeCh:      notification channel for waking the fetcher when new tasks are available (or sync completed) 用来通知fetcher 新的任务到来，或者是同步完成
+//  - expire:      task callback method to abort requests that took too long and return the faulty peers (traffic shaping)  因为超时来终止请求的回调函数。
+//  - pending:     task callback for the number of requests still needing download (detect completion/non-completability) 还需要下载的任务的数量。
+//  - inFlight:    task callback for the number of in-progress requests (wait for all active downloads to finish) 正在处理过程中的请求数量
+//  - throttle:    task callback to check if the processing queue is full and activate throttling (bound memory use) 用来检查处理队列是否满的回调函数。
+//  - reserve:     task callback to reserve new download tasks to a particular peer (also signals partial completions)  用来为某个peer来预定任务的回调函数
 //  - fetchHook:   tester callback to notify of new tasks being initiated (allows testing the scheduling logic)
-//  - fetch:       network callback to actually send a particular download request to a physical remote peer
-//  - cancel:      task callback to abort an in-flight download request and allow rescheduling it (in case of lost peer)
-//  - capacity:    network callback to retrieve the estimated type-specific bandwidth capacity of a peer (traffic shaping)
-//  - idle:        network callback to retrieve the currently (type specific) idle peers that can be assigned tasks
-//  - setIdle:     network callback to set a peer back to idle and update its estimated capacity (traffic shaping)
-//  - kind:        textual label of the type being downloaded to display in log mesages
+//  - fetch:       network callback to actually send a particular download request to a physical remote peer //发送网络请求的回调函数
+//  - cancel:      task callback to abort an in-flight download request and allow rescheduling it (in case of lost peer)  用来取消正在处理的任务的回调函数
+//  - capacity:    network callback to retrieve the estimated type-specific bandwidth capacity of a peer (traffic shaping) 网络容量或者是带宽。
+//  - idle:        network callback to retrieve the currently (type specific) idle peers that can be assigned tasks  返回空闲peers的回调函数
+//  - setIdle:     network callback to set a peer back to idle and update its estimated capacity (traffic shaping)  设置peer为空闲的回调函数tracer
+//  - kind:        textual label of the type being downloaded to display in log mesages   下载类型，用于日志
 func (d *Downloader) fetchParts(errCancel error, deliveryCh chan dataPack, deliver func(dataPack) (int, error), wakeCh chan bool,
 	expire func() map[string]int, pending func() int, inFlight func() bool, throttle func() bool, reserve func(*peerConnection, int) (*fetchRequest, bool, error),
 	fetchHook func([]*types.Header), fetch func(*peerConnection, *fetchRequest) error, cancel func(*fetchRequest), capacity func(*peerConnection) int,
@@ -1142,6 +1173,10 @@ func (d *Downloader) fetchParts(errCancel error, deliveryCh chan dataPack, deliv
 
 	// Prepare the queue and fetch block parts until the block header fetcher's done
 	finished := false
+	//:1、从reserve中领取blockTaskQueue中的header生成request请求
+	//:2、使用fetch向peer节点发送请求
+	//:3、由ProtocolManager.handleMsg获取请求返回值并调用Downloader.Deliver()存入deliveryCh
+	//:4、从deliveryCh获取请求返回值并调用deliver存入queue(fillHeaderSkeleton:headerTaskQueue|fetchBody:blockTaskQueue|fetchReceipt:receiptTaskQueue)
 	for {
 		select {
 		case <-d.cancelCh:
@@ -1178,6 +1213,7 @@ func (d *Downloader) fetchParts(errCancel error, deliveryCh chan dataPack, deliv
 			default:
 			}
 
+		//:processHeaders执行完成后唤醒wakeCh，再发送update信号执行reserve和fetch
 		case cont := <-wakeCh:
 			// The header fetcher sent a continuation flag, check if it's done
 			if !cont {
@@ -1251,6 +1287,7 @@ func (d *Downloader) fetchParts(errCancel error, deliveryCh chan dataPack, deliv
 				// Reserve a chunk of fetches for a peer. A nil can mean either that
 				// no more headers are available, or that the peer is known not to
 				// have them.
+				//:ReserveHeaders、ReserveBodies、ReserveReceipts返回request
 				request, progress, err := reserve(peer, capacity(peer))
 				if err != nil {
 					return err
@@ -1270,6 +1307,8 @@ func (d *Downloader) fetchParts(errCancel error, deliveryCh chan dataPack, deliv
 				if fetchHook != nil {
 					fetchHook(request.Headers)
 				}
+
+				//:FetchHeaders、FetchBodies、FetchReceipts发送request请求
 				if err := fetch(peer, request); err != nil {
 					// Although we could try and make an attempt to fix this, this error really
 					// means that we've double allocated a fetch task to a peer. If that is the
@@ -1328,7 +1367,10 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 		case <-d.cancelCh:
 			return errCancelHeaderProcessing
 
-		case headers := <-d.headerProcCh:
+		//:1，收到从fetchHeaders()方法 中d.headerProcCh发送过来的headers
+		//:2，如果是FastSync或者LightSync模式，直接调用lightchain.InsertHeaderChain(chunk, frequency)插入到headerChain。
+		//:3，如果是FullSync或者FastSyn模式，调用d.queue.Schedule(chunk, origin)，放入downloader.queue来调度
+		case headers := <-d.headerProcCh: //:send by fetcheaders
 			// Terminate header processing if we synced up
 			if len(headers) == 0 {
 				// Notify everyone that headers are fully processed
@@ -1429,6 +1471,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 						}
 					}
 					// Otherwise insert the headers for content retrieval
+					//:将header存入blockTaskQueue，由ReserveBodies和ReserveReceipts领取
 					inserts := d.queue.Schedule(chunk, origin)
 					if len(inserts) != len(chunk) {
 						log.Debug("Stale headers")
@@ -1458,6 +1501,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 }
 
 // processFullSyncContent takes fetch results from the queue and imports them into the chain.
+//:从queue中取出blocks插入到blockchain中
 func (d *Downloader) processFullSyncContent() error {
 	for {
 		results := d.queue.Results(true)
@@ -1493,6 +1537,8 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 	for i, result := range results {
 		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.Transactions, result.Uncles)
 	}
+
+	debugutils.Println("InsertChain", "Insert BlockChain by Downloader")
 	if index, err := d.blockchain.InsertChain(blocks); err != nil {
 		if index < len(results) {
 			log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)
@@ -1513,6 +1559,7 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 	// Start syncing state of the reported head block. This should get us most of
 	// the state of the pivot block.
+	//:开始下载latest.Root开始的stateDB
 	stateSync := d.syncState(latest.Root)
 	defer stateSync.Cancel()
 	go func() {
@@ -1686,6 +1733,7 @@ func (d *Downloader) DeliverNodeData(id string, data [][]byte) (err error) {
 }
 
 // deliver injects a new batch of data received from a remote node.
+//:将来自peerid的packet投递到destCh
 func (d *Downloader) deliver(id string, destCh chan dataPack, packet dataPack, inMeter, dropMeter metrics.Meter) (err error) {
 	// Update the delivery metrics for both good and failed deliveries
 	inMeter.Mark(int64(packet.Items()))

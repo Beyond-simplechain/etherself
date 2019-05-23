@@ -143,6 +143,7 @@ func (pm *ProtocolManager) syncer() {
 
 	for {
 		select {
+		//:当有新peer加入，尝试同步总难度最大的节点
 		case <-pm.newPeerCh:
 			// Make sure we have peers to select from, then sync
 			if pm.peers.Len() < minDesiredPeerCount {
@@ -150,6 +151,7 @@ func (pm *ProtocolManager) syncer() {
 			}
 			go pm.synchronise(pm.peers.BestPeer())
 
+		//:每过10秒，尝试同步总难度最大的节点
 		case <-forceSync.C:
 			// Force a sync even if not enough peers are present
 			go pm.synchronise(pm.peers.BestPeer())
@@ -161,6 +163,12 @@ func (pm *ProtocolManager) syncer() {
 }
 
 // synchronise tries to sync up our local block chain with a remote peer.
+//:同步来自peer的链，使用downloader
+//:1、确保当前区块的高度小于拥有的最高区块高度的p2p节点的高度；
+//:2、获取同步模式：fastSync或fullSync；
+//:3、使用该同步模式进行一次同步；
+//:4、同步完成后打开交易处理阀门atomic.StoreUint32(&pm.acceptTxs, 1)，允许以太坊节点接受其他节点广播的交易；
+//:5、将CurrentBlock广播出去。
 func (pm *ProtocolManager) synchronise(peer *peer) {
 	// Short circuit if no peers are available
 	if peer == nil {
@@ -171,6 +179,7 @@ func (pm *ProtocolManager) synchronise(peer *peer) {
 	td := pm.blockchain.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
 
 	pHead, pTd := peer.Head()
+	//:除非peer的总难度更大，否则不同步
 	if pTd.Cmp(td) <= 0 {
 		return
 	}

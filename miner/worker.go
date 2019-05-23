@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	mapset "github.com/deckarep/golang-set"
+	"github.com/deckarep/golang-set"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -80,16 +80,16 @@ const (
 type environment struct {
 	signer types.Signer
 
-	state     *state.StateDB // apply state changes here
+	state     *state.StateDB // apply state changes here //:new at makeCurrent
 	ancestors mapset.Set     // ancestor set (used for checking uncle parent validity)
 	family    mapset.Set     // family set (used for checking uncle invalidity)
 	uncles    mapset.Set     // uncle set
 	tcount    int            // tx count in cycle
 	gasPool   *core.GasPool  // available gas used to pack transactions
 
-	header   *types.Header
-	txs      []*types.Transaction
-	receipts []*types.Receipt
+	header   *types.Header        //:modified by commitNewWork() -> makeCurrent()
+	txs      []*types.Transaction //:modified by commitTransaction(), transactions
+	receipts []*types.Receipt     //:modified by commitTransaction(), results of all transactions
 }
 
 // task contains all information for consensus engine sealing and result submitting.
@@ -132,7 +132,7 @@ type worker struct {
 
 	// Subscriptions
 	mux          *event.TypeMux
-	txsCh        chan core.NewTxsEvent
+	txsCh        chan core.NewTxsEvent //:txPool.txFeed
 	txsSub       event.Subscription
 	chainHeadCh  chan core.ChainHeadEvent
 	chainHeadSub event.Subscription
@@ -215,12 +215,13 @@ func newWorker(config *params.ChainConfig, engine consensus.Engine, eth Backend,
 		recommit = minRecommitInterval
 	}
 
-	go worker.mainLoop()
-	go worker.newWorkLoop(recommit)
-	go worker.resultLoop()
-	go worker.taskLoop()
+	go worker.mainLoop()            //:负泽处理newWork、chainSide、txs事件
+	go worker.newWorkLoop(recommit) //:负责在接收其他模块event后，发送newWorkEvent
+	go worker.resultLoop()          //:负责接收共识engine挖到的块
+	go worker.taskLoop()            //:负责执行共识engine挖矿循环
 
 	// Submit first work to initialize pending state.
+	//:初始化时先commit一次work初始化pending
 	worker.startCh <- struct{}{}
 
 	return worker
@@ -346,6 +347,7 @@ func (w *worker) newWorkLoop(recommit time.Duration) {
 			timestamp = time.Now().Unix()
 			commit(false, commitInterruptNewHead)
 
+		//:send by blockchain.PostChainEvent
 		case head := <-w.chainHeadCh:
 			clearPending(head.Block.NumberU64())
 			timestamp = time.Now().Unix()
@@ -406,9 +408,11 @@ func (w *worker) mainLoop() {
 
 	for {
 		select {
+		//:sent by newWorkLoop() 当接收到一个区块头的信息的时候，马上开启挖矿服务
 		case req := <-w.newWorkCh:
 			w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
 
+		//:接收到非主链的区块时，加到叔块
 		case ev := <-w.chainSideCh:
 			// Short circuit for duplicate side blocks
 			if _, exist := w.localUncles[ev.Block.Hash()]; exist {
@@ -448,12 +452,17 @@ func (w *worker) mainLoop() {
 				}
 			}
 
+		//: txsEv is sent by
+		//: internal/ethapi/api.go::SendTransaction->SubmitTransaction,
+		//: eth/api_backend.go::SendTx
+		//: core/tx_pool.go::AddLocal->addTx->add->txFeed.Send
 		case ev := <-w.txsCh:
 			// Apply transactions to the pending state if we're not mining.
 			//
 			// Note all transactions received may not be continuous with transactions
 			// already included in the current mining block. These transactions will
-			// be automatically eliminated.
+			// be automatically .
+			//:如果本机未在挖矿，直接执行tx(收到block后删除删除重复tx?)
 			if !w.isRunning() && w.current != nil {
 				w.mu.RLock()
 				coinbase := w.coinbase
@@ -467,7 +476,7 @@ func (w *worker) mainLoop() {
 				txset := types.NewTransactionsByPriceAndNonce(w.current.signer, txs)
 				w.commitTransactions(txset, coinbase, nil)
 				w.updateSnapshot()
-			} else {
+			} else { //:如果本机挖矿，且是POA协议，commitNewWork
 				// If we're mining, but nothing is being processed, wake on new transactions
 				if w.config.Clique != nil && w.config.Clique.Period == 0 {
 					w.commitNewWork(nil, false, time.Now().Unix())
@@ -505,6 +514,7 @@ func (w *worker) taskLoop() {
 	}
 	for {
 		select {
+		//:taskEv sent by worker.commitNewWork
 		case task := <-w.taskCh:
 			if w.newTaskHook != nil {
 				w.newTaskHook(task)
@@ -540,6 +550,8 @@ func (w *worker) taskLoop() {
 func (w *worker) resultLoop() {
 	for {
 		select {
+		//:block is sent by consensus.Seal
+		//:send ChainEvent+ChainHeadEvent or ChainSideEvent
 		case block := <-w.resultCh:
 			// Short circuit when receiving empty result.
 			if block == nil {
@@ -576,6 +588,7 @@ func (w *worker) resultLoop() {
 				logs = append(logs, receipt.Logs...)
 			}
 			// Commit block and state to database.
+			//:写入db
 			stat, err := w.chain.WriteBlockWithState(block, receipts, task.state)
 			if err != nil {
 				log.Error("Failed writing block to chain", "err", err)
@@ -691,11 +704,14 @@ func (w *worker) updateSnapshot() {
 func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Address) ([]*types.Log, error) {
 	snap := w.current.state.Snapshot()
 
+	//:执行交易
 	receipt, _, err := core.ApplyTransaction(w.config, w.chain, &coinbase, w.current.gasPool, w.current.state, w.current.header, tx, &w.current.header.GasUsed, *w.chain.GetVMConfig())
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
 		return nil, err
 	}
+
+	//:将执行后的交易、回执保存到worker.current
 	w.current.txs = append(w.current.txs, tx)
 	w.current.receipts = append(w.current.receipts, receipt)
 
@@ -714,6 +730,7 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 
 	var coalescedLogs []*types.Log
 
+	//:w.current.gasPool.Gas() < params.TxGas 或 tx == nil 时 break
 	for {
 		// In the following three cases, we will interrupt the execution of the transaction.
 		// (1) new head block event arrival, the interrupt signal is 1
@@ -741,7 +758,7 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 			break
 		}
 		// Retrieve the next transaction and abort if all done
-		tx := txs.Peek()
+		tx := txs.Peek() //:找出下一个price最高的tx
 		if tx == nil {
 			break
 		}
@@ -816,6 +833,7 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 }
 
 // commitNewWork generates several new sealing tasks based on the parent block.
+//:通过父块的header启动新的挖矿任务
 func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -849,6 +867,8 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		}
 		header.Coinbase = w.coinbase
 	}
+
+	//:计算新header的Difficulty
 	if err := w.engine.Prepare(w.chain, header); err != nil {
 		log.Error("Failed to prepare header for mining", "err", err)
 		return
@@ -902,6 +922,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	commitUncles(w.localUncles)
 	commitUncles(w.remoteUncles)
 
+	//:允许commit没有tx的块，于是在commit时不updateSnapshot
 	if !noempty {
 		// Create an empty block based on temporary copied state for sealing in advance without waiting block
 		// execution finished.
@@ -944,6 +965,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 
 // commit runs any post-transaction state modifications, assembles the final block
 // and commits new work if consensus engine is running.
+//:newWorkCh -> commitNewWorker -> this
 func (w *worker) commit(uncles []*types.Header, interval func(), update bool, start time.Time) error {
 	// Deep copy receipts here to avoid interaction between different tasks.
 	receipts := make([]*types.Receipt, len(w.current.receipts))
@@ -952,16 +974,19 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 		*receipts[i] = *l
 	}
 	s := w.current.state.Copy()
+	//:将txs、txReceipts存入block中
 	block, err := w.engine.Finalize(w.chain, w.current.header, s, w.current.txs, uncles, w.current.receipts)
 	if err != nil {
 		return err
 	}
+	//:如果此时worker在运行，就将此封装好的块交给taskLoop
 	if w.isRunning() {
 		if interval != nil {
 			interval()
 		}
 		select {
 		case w.taskCh <- &task{receipts: receipts, state: s, block: block, createdAt: time.Now()}:
+			//:确认之前的所有块
 			w.unconfirmed.Shift(block.NumberU64() - 1)
 
 			feesWei := new(big.Int)

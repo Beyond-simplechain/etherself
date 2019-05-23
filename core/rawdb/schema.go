@@ -30,18 +30,28 @@ var (
 	databaseVerisionKey = []byte("DatabaseVersion")
 
 	// headHeaderKey tracks the latest know header's hash.
+	//:最新的区块头 HeaderChain中使用
 	headHeaderKey = []byte("LastHeader")
 
 	// headBlockKey tracks the latest know full block's hash.
+	//:最新的区块 BlockChain 中使用
 	headBlockKey = []byte("LastBlock")
 
 	// headFastBlockKey tracks the latest known incomplete block's hash during fast sync.
+	//:最新的快速同步的区块头
 	headFastBlockKey = []byte("LastFast")
 
 	// fastTrieProgressKey tracks the number of trie entries imported during fast sync.
 	fastTrieProgressKey = []byte("TrieSync")
 
 	// Data item prefixes (use single byte to avoid mixing data types, avoid `i`, used for indexes).
+	//:"h"+num+"n" -> hash  用来存储规范的区块链的高度和区块头的hash值
+	//:"h" + num + hash -> header 高度+hash值 -> 区块头
+	//:"h" + num + hash + "t" -> td  高度+hash值 -> 总难度
+	//:"H" + hash -> num  区块体hash -> 高度
+	//:"b" + num + hash -> block body   高度+hash值 -> 区块体
+	//:"r" + num + hash -> block receipts  高度 + hash值 -> 区块收据
+	//:"l" + hash -> transaction/receipt lookup metadata
 	headerPrefix       = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header
 	headerTDSuffix     = []byte("t") // headerPrefix + num (uint64 big endian) + hash + headerTDSuffix -> td
 	headerHashSuffix   = []byte("n") // headerPrefix + num (uint64 big endian) + headerHashSuffix -> hash

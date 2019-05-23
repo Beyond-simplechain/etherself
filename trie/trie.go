@@ -65,6 +65,7 @@ type LeafCallback func(leaf []byte, parent common.Hash) error
 //
 // Trie is not safe for concurrent use.
 type Trie struct {
+	//:trie.Database
 	db   *Database
 	root node
 
@@ -72,6 +73,7 @@ type Trie struct {
 	// cachegen increases by one with each commit operation.
 	// new nodes are tagged with the current generation and unloaded
 	// when their generation is older than than cachegen-cachelimit.
+	//:LRU，每次commit更新cachegen，许久未读写的node会从缓存中移除
 	cachegen, cachelimit uint16
 }
 
@@ -82,6 +84,7 @@ func (t *Trie) SetCacheLimit(l uint16) {
 }
 
 // newFlag returns the cache flag value for a newly created node.
+//:insert/delete调用，将node的cachegen同步更新
 func (t *Trie) newFlag() nodeFlag {
 	return nodeFlag{dirty: true, gen: t.cachegen}
 }
@@ -152,6 +155,7 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 		if err == nil && didResolve {
 			n = n.copy()
 			n.Val = newnode
+			//:读节点时更新node的cachegen
 			n.flags.gen = t.cachegen
 		}
 		return value, n, didResolve, err
@@ -460,6 +464,7 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 		return common.Hash{}, err
 	}
 	t.root = cached
+	//:更新树的cachegen
 	t.cachegen++
 	return common.BytesToHash(hash.(hashNode)), nil
 }

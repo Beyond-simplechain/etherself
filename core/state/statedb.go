@@ -32,8 +32,9 @@ import (
 )
 
 type revision struct {
-	id           int
-	journalIndex int
+	//:snapshot快照结构
+	id           int //:快照id
+	journalIndex int //:journalEntry的index
 }
 
 var (
@@ -61,7 +62,9 @@ type StateDB struct {
 	trie Trie
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
-	stateObjects      map[common.Address]*stateObject
+	//:stateObject缓存
+	stateObjects map[common.Address]*stateObject
+	//:用来缓存被修改过的stateObjects
 	stateObjectsDirty map[common.Address]struct{}
 
 	// DB error.
@@ -74,18 +77,18 @@ type StateDB struct {
 	// The refund counter, also used by state transitioning.
 	refund uint64
 
-	thash, bhash common.Hash
+	thash, bhash common.Hash //:交易hash和区块hash
 	txIndex      int
-	logs         map[common.Hash][]*types.Log
+	logs         map[common.Hash][]*types.Log //:<交易hash,log>
 	logSize      uint
 
 	preimages map[common.Hash][]byte
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
-	journal        *journal
-	validRevisions []revision
-	nextRevisionId int
+	journal        *journal   //:状态修改日志，用于snapshot和回滚
+	validRevisions []revision //:保存快照
+	nextRevisionId int        //:保存下一快照id
 }
 
 // Create a new state from a given trie.
@@ -550,6 +553,7 @@ func (self *StateDB) Snapshot() int {
 // RevertToSnapshot reverts all state changes made since the given revision.
 func (self *StateDB) RevertToSnapshot(revid int) {
 	// Find the snapshot in the stack of valid snapshots.
+	//:binary search to find
 	idx := sort.Search(len(self.validRevisions), func(i int) bool {
 		return self.validRevisions[i].id >= revid
 	})
@@ -570,6 +574,7 @@ func (self *StateDB) GetRefund() uint64 {
 
 // Finalise finalises the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
+//:将缓存中的stateObject写入到trie，数据仍在内存，没有commit到文件
 func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 	for addr := range s.journal.dirties {
 		stateObject, exist := s.stateObjects[addr]
@@ -621,6 +626,7 @@ func (s *StateDB) clearJournalAndRefund() {
 func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) {
 	defer s.clearJournalAndRefund()
 
+	// 遍历脏账户，将被更新的账户写入状态树
 	for addr := range s.journal.dirties {
 		s.stateObjectsDirty[addr] = struct{}{}
 	}

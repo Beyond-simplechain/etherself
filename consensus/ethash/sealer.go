@@ -48,6 +48,7 @@ var (
 
 // Seal implements consensus.Engine, attempting to find a nonce that satisfies
 // the block's difficulty requirements.
+//:worker.newWorker()->go worker.taskLoop()->engine.Seal()
 func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
 	// If we're running a fake PoW, simply return a 0 nonce immediately
 	if ethash.config.PowMode == ModeFake || ethash.config.PowMode == ModeFullFake {
@@ -61,6 +62,7 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, resu
 		return nil
 	}
 	// If we're running a shared PoW, delegate sealing to it
+	//:测试网络
 	if ethash.shared != nil {
 		return ethash.shared.Seal(chain, block, results, stop)
 	}
@@ -96,16 +98,19 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, resu
 		pend.Add(1)
 		go func(id int, nonce uint64) {
 			defer pend.Done()
+			//:locals <- block if mined successfully
 			ethash.mine(block, id, nonce, abort, locals)
 		}(i, uint64(ethash.rand.Int63()))
 	}
 	// Wait until sealing is terminated or a nonce is found
+	//:阻塞等待mine结果从locals返回
 	go func() {
 		var result *types.Block
 		select {
 		case <-stop:
 			// Outside abort, stop all miner threads
 			close(abort)
+		//:results <- block <- locals
 		case result = <-locals:
 			// One of the threads found a block, abort all others
 			select {
@@ -132,9 +137,10 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *types.Block, resu
 func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block) {
 	// Extract some data from the header
 	var (
-		header  = block.Header()
-		hash    = ethash.SealHash(header).Bytes()
-		target  = new(big.Int).Div(two256, header.Difficulty)
+		header = block.Header()                  //:当前块的header
+		hash   = ethash.SealHash(header).Bytes() //:当前块header的hash
+		//:header.Difficulty由ethash.CalcDifficulty算出，由父块header和出块时间绝定
+		target  = new(big.Int).Div(two256, header.Difficulty) //:计算目标 2^256➗header.Difficulty
 		number  = header.Number.Uint64()
 		dataset = ethash.dataset(number, false)
 	)
@@ -145,6 +151,9 @@ func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan s
 	)
 	logger := log.New("miner", id)
 	logger.Trace("Started ethash search for new nonces", "seed", seed)
+
+	//fmt.Println("cc", "difficulty:", header.Difficulty, "nonce:", nonce, "target:", target)
+
 search:
 	for {
 		select {
@@ -162,6 +171,7 @@ search:
 				attempts = 0
 			}
 			// Compute the PoW value of this nonce
+			//:凑出nonce后将nonce写入header然后填充block生成完整的块
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
 			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
 				// Correct nonce found, create a new header with it

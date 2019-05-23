@@ -52,12 +52,12 @@ type StateTransition struct {
 	gp         *GasPool
 	msg        Message
 	gas        uint64
-	gasPrice   *big.Int
-	initialGas uint64
-	value      *big.Int
+	gasPrice   *big.Int //:gas的价格
+	initialGas uint64   //:交易初始gas，交易执行完(初始gas-剩余gas)即是花费gas，gas不足则交易失败
+	value      *big.Int //:转账的value
 	data       []byte
-	state      vm.StateDB
-	evm        *vm.EVM
+	state      vm.StateDB //:状态机
+	evm        *vm.EVM    //:虚拟机
 }
 
 // Message represents a message sent to a contract.
@@ -181,6 +181,7 @@ func (st *StateTransition) preCheck() error {
 // returning the result including the used gas. It returns an error if failed.
 // An error indicates a consensus issue.
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
+	//:检查nonce并购买gas
 	if err = st.preCheck(); err != nil {
 		return
 	}
@@ -209,6 +210,7 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		ret, _, st.gas, vmerr = evm.Create(sender, st.data, st.gas, st.value)
 	} else {
 		// Increment the nonce for the next transaction
+		//:如果不是创建新合约，则将address的nonce+1
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		ret, st.gas, vmerr = evm.Call(sender, st.to(), st.data, st.gas, st.value)
 	}

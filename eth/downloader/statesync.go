@@ -40,7 +40,7 @@ type stateReq struct {
 	timer    *time.Timer                // Timer to fire when the RTT timeout expires
 	peer     *peerConnection            // Peer that we're requesting from
 	response [][]byte                   // Response data of the peer (nil for timeouts)
-	dropped  bool                       // Flag whether the peer dropped off early
+	dropped  bool                       //:这个peer是否已经被drop了 Flag whether the peer dropped off early
 }
 
 // timedOut returns if this request timed out.
@@ -58,6 +58,7 @@ type stateSyncStats struct {
 }
 
 // syncState starts downloading state with the given root hash.
+//:从root开始下载stateDB，发送一个stateSyncStart信号开始执行stateFetcher的loop
 func (d *Downloader) syncState(root common.Hash) *stateSync {
 	s := newStateSync(d, root)
 	select {
@@ -103,7 +104,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 		}
 	}()
 	// Run the state sync.
-	go s.run()
+	go s.run() //:start stateSync loop
 	defer s.Cancel()
 
 	// Listen for peer departure events to cancel assigned tasks
@@ -131,6 +132,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 			return nil
 
 		// Send the next finished request to the current sync:
+		//:只有在deliverReqCh不为空，即存在finished才会把收个finish投递到s.deliver<chan *stateReq>
 		case deliverReqCh <- deliverReq:
 			// Shift out the first request, but also set the emptied slot to nil for GC
 			copy(finished, finished[1:])
@@ -138,6 +140,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 			finished = finished[:len(finished)-1]
 
 		// Handle incoming state packs:
+		//:从peer获取stateDb数据投递到stateSync.deliver
 		case pack := <-d.stateCh:
 			// Discard any data not requested (or previously timed out)
 			req := active[pack.PeerId()]
@@ -303,9 +306,11 @@ func (s *stateSync) loop() (err error) {
 		case <-s.d.cancelCh:
 			return errCancelStateFetch
 
+		//:接收从Download.stateFetcher中获取的req.response，插入到statDB.Trie中
 		case req := <-s.deliver:
 			// Response, disconnect or timeout triggered, drop the peer if stalling
 			log.Trace("Received node data response", "peer", req.peer.id, "count", len(req.response), "dropped", req.dropped, "timeout", !req.dropped && req.timedOut())
+			//:item少于2，没有drop也不是因为timeout的错误没有item的话，就drop掉这个错误节点
 			if len(req.items) <= 2 && !req.dropped && req.timedOut() {
 				// 2 items are the minimum requested, if even that times out, we've no use of
 				// this peer at the moment.
@@ -313,6 +318,7 @@ func (s *stateSync) loop() (err error) {
 				s.d.dropPeer(req.peer.id)
 			}
 			// Process all the received blobs and check for stale delivery
+			//:处理每个state的同步
 			delivered, err := s.process(req)
 			if err != nil {
 				log.Warn("Node data write error", "err", err)

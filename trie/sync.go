@@ -172,6 +172,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 
 	for i, item := range results {
 		// If the item was not requested, bail out
+		//:必须是我们请求的hash才处理
 		request := s.requests[item.Hash]
 		if request == nil {
 			return committed, i, ErrNotRequested
@@ -180,6 +181,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 			return committed, i, ErrAlreadyProcessed
 		}
 		// If the item is a raw entry request, commit directly
+		//:是raw则表示该trie节点为valuenode或hashnode，所以不存在children，直接提交
 		if request.raw {
 			request.data = item.Data
 			s.commit(request)
@@ -213,6 +215,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 
 // Commit flushes the data stored in the internal membatch out to persistent
 // storage, returning the number of items written and any occurred error.
+//:将membatch全部写到diskDB
 func (s *Sync) Commit(dbw ethdb.Putter) (int, error) {
 	// Dump the membatch into a database dbw
 	for i, key := range s.membatch.order {
@@ -312,6 +315,7 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 // committed themselves.
 func (s *Sync) commit(req *request) (err error) {
 	// Write the node content to the membatch
+	//:将node写到membatch
 	s.membatch.batch[req.hash] = req.data
 	s.membatch.order = append(s.membatch.order, req.hash)
 

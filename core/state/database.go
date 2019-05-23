@@ -18,12 +18,13 @@ package state
 
 import (
 	"fmt"
+	"github.com/ethereum/go-ethereum/debug.prints"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/golang-lru"
 )
 
 // Trie cache generation limit after which to evict trie nodes from memory.
@@ -59,7 +60,7 @@ type Database interface {
 	TrieDB() *trie.Database
 }
 
-// Trie is a Ethereum Merkle Trie.
+// Trie    is a Ethereum Merkle Trie.
 type Trie interface {
 	TryGet(key []byte) ([]byte, error)
 	TryUpdate(key, value []byte) error
@@ -172,6 +173,7 @@ type cachedTrie struct {
 }
 
 func (m cachedTrie) Commit(onleaf trie.LeafCallback) (common.Hash, error) {
+	debugutils.Println("trie", "cachedTrie Commit")
 	root, err := m.SecureTrie.Commit(onleaf)
 	if err == nil {
 		m.db.pushTrie(m.SecureTrie)

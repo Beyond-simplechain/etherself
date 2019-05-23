@@ -69,6 +69,7 @@ type DatabaseReader interface {
 // the disk database. The aim is to accumulate trie writes in-memory and only
 // periodically flush a couple tries to disk, garbage collecting the remainder.
 type Database struct {
+	//:底层数据库levelDB，Trie需要序列化后以KV方式存储
 	diskdb ethdb.Database // Persistent storage for matured trie nodes
 
 	cleans  *bigcache.BigCache          // GC friendly memory cache of clean node RLPs
@@ -747,6 +748,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch) error {
 		return err
 	}
 	// If we've reached an optimal batch size, commit and start over
+	//:只在batch满了后才插入到ethdb
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
 		if err := batch.Write(); err != nil {
 			return err

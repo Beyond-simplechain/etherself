@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/debug.prints"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -120,6 +121,7 @@ func (t *odrTrie) TryDelete(key []byte) error {
 }
 
 func (t *odrTrie) Commit(onleaf trie.LeafCallback) (common.Hash, error) {
+	debugutils.Println("trie", "odrTrie Commit")
 	if t.trie == nil {
 		return t.id.Root, nil
 	}

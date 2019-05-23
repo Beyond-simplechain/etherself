@@ -279,6 +279,7 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 	debug.Memsize.Add("node", stack)
 
 	// Start up the node itself
+	// :启动P2P、RPC协议
 	utils.StartNode(stack)
 
 	// Unlock any account specifically requested

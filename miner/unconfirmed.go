@@ -38,7 +38,7 @@ type chainRetriever interface {
 // unconfirmedBlock is a small collection of metadata about a locally mined block
 // that is placed into a unconfirmed set for canonical chain inclusion tracking.
 type unconfirmedBlock struct {
-	index uint64
+	index uint64 //:高度
 	hash  common.Hash
 }
 
@@ -64,6 +64,7 @@ func newUnconfirmedBlocks(chain chainRetriever, depth uint) *unconfirmedBlocks {
 // Insert adds a new block to the set of unconfirmed ones.
 func (set *unconfirmedBlocks) Insert(index uint64, hash common.Hash) {
 	// If a new block was mined locally, shift out any old enough blocks
+	// :可能分叉，存在比当前生产块高度更高的块
 	set.Shift(index)
 
 	// Create the new item as its own ring

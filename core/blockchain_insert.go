@@ -83,7 +83,7 @@ type insertIterator struct {
 	chain     types.Blocks
 	results   <-chan error
 	index     int
-	validator Validator
+	validator Validator //:BlockValidator
 }
 
 // newInsertIterator creates a new iterator based on the given blocks, which are
