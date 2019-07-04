@@ -421,12 +421,14 @@ func (f *Fetcher) loop() {
 				f.forgetHash(hash)
 
 				// If the block still didn't arrive, queue for completion
+				//:如果本地没有这个区块，则放入到completing，创建请求
 				if f.getBlock(hash) == nil {
 					request[announce.origin] = append(request[announce.origin], hash)
 					f.completing[hash] = announce
 				}
 			}
 			// Send out all block body requests
+			//:发送所有的请求，获取body，依然是每个peer一个单独协程
 			for peer, hashes := range request {
 				log.Trace("Fetching scheduled bodies", "peer", peer, "list", hashes)
 
@@ -546,8 +548,10 @@ func (f *Fetcher) loop() {
 				// Match up a body to any possible completion request
 				matched := false
 
+				//:遍历所有保存的请求，因为tx和uncle，不知道它是属于哪个区块的，只能去遍历所有的请求
 				for hash, announce := range f.completing {
 					if f.queued[hash] == nil {
+						//:把传入的每个块的hash和unclehash和它请求出去的记录进行对比，匹配则说明是fetcher请求的区块body
 						txnHash := types.DeriveSha(types.Transactions(task.transactions[i]))
 						uncleHash := types.CalcUncleHash(task.uncles[i])
 
@@ -555,6 +559,7 @@ func (f *Fetcher) loop() {
 							// Mark the body matched, reassemble if still unknown
 							matched = true
 
+							//:如果当前链还没有这个区块，则收集这个区块，合并成新区块
 							if f.getBlock(hash) == nil {
 								block := types.NewBlockWithHeader(announce.header).WithBody(task.transactions[i], task.uncles[i])
 								block.ReceivedAt = task.time
@@ -566,6 +571,7 @@ func (f *Fetcher) loop() {
 						}
 					}
 				}
+				//:从task中移除fetcher请求的数据
 				if matched {
 					task.transactions = append(task.transactions[:i], task.transactions[i+1:]...)
 					task.uncles = append(task.uncles[:i], task.uncles[i+1:]...)
@@ -581,7 +587,7 @@ func (f *Fetcher) loop() {
 				return
 			}
 			// Schedule the retrieved blocks for ordered import
-			//:将同步完成的block存入queue等待import
+			//:将同步完成的block存入queue等待import到区块链
 			for _, block := range blocks {
 				if announce := f.completing[block.Hash()]; announce != nil {
 					f.enqueue(announce.origin, block)

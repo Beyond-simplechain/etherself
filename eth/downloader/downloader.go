@@ -487,7 +487,7 @@ func (d *Downloader) syncWithPeer(p *peerConnection, hash common.Hash, td *big.I
 	} else if d.mode == FullSync {
 		fetchers = append(fetchers, d.processFullSyncContent)
 	}
-	return d.spawnSync(fetchers) //:给以上每个fetcher启动一个goroutine, 然后阻塞的等待fetcher出错
+	return d.spawnSync(fetchers) //:给以上每个fetcher启动一个goroutine, 然后阻塞的等待fetcher返回
 }
 
 // spawnSync runs d.process and all given fetcher functions to completion in
@@ -898,10 +898,13 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 		ttl = d.requestTTL()
 		timeout.Reset(ttl)
 
+		//:->SendMessage(GetBlockHeadersMsg)
 		if skeleton {
+			//:获取区块头骨架，从from+uint64(MaxHeaderFetch128)-1高度开始，获取MaxSkeletonSize192个，跳过MaxHeaderFetch-1个
 			p.log.Trace("Fetching skeleton headers", "count", MaxHeaderFetch, "from", from)
 			go p.peer.RequestHeadersByNumber(from+uint64(MaxHeaderFetch)-1, MaxSkeletonSize, MaxHeaderFetch-1, false)
 		} else {
+			//:获取所有区块头，从from开始，获取MaxHeaderFetch个
 			p.log.Trace("Fetching full headers", "count", MaxHeaderFetch, "from", from)
 			go p.peer.RequestHeadersByNumber(from, MaxHeaderFetch, 0, false)
 		}
@@ -914,7 +917,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 		case <-d.cancelCh:
 			return errCancelHeaderFetch
 
-		//:send by ProtocolManager.handleMsg() -> this.DeliverHeaders()
+		//:send by ProtocolManager.handleMsg(BlockHeadersMsg) -> this.DeliverHeaders()
 		case packet := <-d.headerCh:
 			// Make sure the active peer is giving us the skeleton headers
 			if packet.PeerId() != p.id {
@@ -925,6 +928,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 			timeout.Stop()
 
 			// If the skeleton's finished, pull any remaining head headers directly from the origin
+			//:表示skeleton已经完成，把剩下需要的head以获取所有的方式全部获取
 			if packet.Items() == 0 && skeleton {
 				skeleton = false
 				getHeaders(from)
@@ -957,12 +961,14 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 
 			// If we received a skeleton batch, resolve internals concurrently
 			if skeleton {
+				//:收到一个skeleton，从其他节点下载headers进行填充
 				filled, proced, err := d.fillHeaderSkeleton(from, headers)
 				if err != nil {
 					p.log.Debug("Skeleton chain invalid", "err", err)
 					return errInvalidChain
 				}
 				headers = filled[proced:]
+				//:更新获取区块头的起始高度
 				from += uint64(proced)
 			} else {
 				// If we're closing in on the chain head, but haven't yet reached it, delay
@@ -990,7 +996,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 				}
 			}
 			// Insert all the new headers and fetch the next batch
-			//:把新headers写入headerProcCh，有processHeaders来处理
+			//:把新headers写入headerProcCh，由processHeaders来处理
 			if len(headers) > 0 {
 				p.log.Trace("Scheduling new headers", "count", len(headers), "from", from)
 				select {
@@ -999,6 +1005,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 				case <-d.cancelCh:
 					return errCancelHeaderFetch
 				}
+				//:更新from用于获取下一高度的headers
 				from += uint64(len(headers))
 				getHeaders(from)
 			} else {
@@ -1446,8 +1453,10 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 					if chunk[len(chunk)-1].Number.Uint64()+uint64(fsHeaderForceVerify) > pivot {
 						frequency = 1
 					}
+					//:fast和light直接把header存入
 					if n, err := d.lightchain.InsertHeaderChain(chunk, frequency); err != nil {
 						// If some headers were inserted, add them too to the rollback list
+						//:有err则把成功插入的header加入到回滚列表中
 						if n > 0 {
 							rollback = append(rollback, chunk[:n]...)
 						}
@@ -1504,6 +1513,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 //:从queue中取出blocks插入到blockchain中
 func (d *Downloader) processFullSyncContent() error {
 	for {
+		//:阻塞等待results
 		results := d.queue.Results(true)
 		if len(results) == 0 {
 			return nil
@@ -1559,7 +1569,7 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 	// Start syncing state of the reported head block. This should get us most of
 	// the state of the pivot block.
-	//:开始下载latest.Root开始的stateDB
+	//:开始下载最新块的stateDB
 	stateSync := d.syncState(latest.Root)
 	defer stateSync.Cancel()
 	go func() {
@@ -1571,6 +1581,7 @@ func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 	// sync takes long enough for the chain head to move significantly.
 	pivot := uint64(0)
 	if height := latest.Number.Uint64(); height > uint64(fsMinFullBlocks) {
+		//:pivot = 块高度 - 64
 		pivot = height - uint64(fsMinFullBlocks)
 	}
 	// To cater for moving pivot points, track the pivot block and subsequently
@@ -1609,10 +1620,14 @@ func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 				pivot = height - uint64(fsMinFullBlocks)
 			}
 		}
+		//:P-高度为pivot的块，beforeP、afterP在pivot之前、后的块
 		P, beforeP, afterP := splitAroundPivot(pivot, results)
+		//:将beforeP的body和receipt都写入chain中
 		if err := d.commitFastSyncData(beforeP, stateSync); err != nil {
 			return err
 		}
+
+		//:同步pivot节点的state
 		if P != nil {
 			// If new pivot block found, cancel old state retrieval and restart
 			if oldPivot != P {
@@ -1633,6 +1648,8 @@ func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 				if stateSync.err != nil {
 					return stateSync.err
 				}
+				//:把P对应的result（包含body和receipt）调用commitPivotBlock插入本地区块链中，
+				//:并调用FastSyncCommitHead记录这个pivot的hash值，存在downloader中，标记为快速同步的最后一个区块hash值
 				if err := d.commitPivotBlock(P); err != nil {
 					return err
 				}
@@ -1644,6 +1661,7 @@ func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 			}
 		}
 		// Fast sync done, pivot commit done, full import
+		//:afterP部分只插入body，需要通过fullSync模式同步
 		if err := d.importBlockResults(afterP); err != nil {
 			return err
 		}

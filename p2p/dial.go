@@ -69,14 +69,14 @@ func (t TCPDialer) Dial(dest *enode.Node) (net.Conn, error) {
 // of the main loop in Server.run.
 type dialstate struct {
 	maxDynDials int
-	ntab        discoverTable
+	ntab        discoverTable //:table.lookup()
 	netrestrict *netutil.Netlist
 	self        enode.ID
 
 	lookupRunning bool
 	dialing       map[enode.ID]connFlag
-	lookupBuf     []*enode.Node // current discovery lookup results
-	randomNodes   []*enode.Node // filled from Table
+	lookupBuf     []*enode.Node //:当前lookup结果 current discovery lookup results
+	randomNodes   []*enode.Node //:table中随机选出的node filled from Table
 	static        map[enode.ID]*dialTask
 	hist          *dialHistory
 
@@ -106,6 +106,7 @@ type task interface {
 
 // A dialTask is generated for each node that is dialed. Its
 // fields cannot be accessed while the task is running.
+//:向每个节点发起连接产生的任务
 type dialTask struct {
 	flags        connFlag
 	dest         *enode.Node
@@ -116,12 +117,14 @@ type dialTask struct {
 // discoverTask runs discovery table operations.
 // Only one discoverTask is active at any time.
 // discoverTask.Do performs a random lookup.
+//:当节点不足时去table中查找新节点的任务
 type discoverTask struct {
 	results []*enode.Node
 }
 
 // A waitExpireTask is generated if there are no other tasks
 // to keep the loop in Server.run ticking.
+//:保证Server.run的持续执行
 type waitExpireTask struct {
 	time.Duration
 }

@@ -92,10 +92,10 @@ type CacheConfig struct {
 // included in the canonical one where as GetBlockByNumber always represents the
 // canonical chain.
 type BlockChain struct {
-	chainConfig *params.ChainConfig // Chain & network configuration
-	cacheConfig *CacheConfig        // Cache configuration for pruning
+	chainConfig *params.ChainConfig //:初始化配置 Chain & network configuration
+	cacheConfig *CacheConfig        //:缓存的配置 Cache configuration for pruning
 
-	db     ethdb.Database // Low level persistent database to store final content in
+	db     ethdb.Database //:底层levelDB Low level persistent database to store final content in
 	triegc *prque.Prque   // Priority queue mapping block numbers to tries to gc
 	gcproc time.Duration  // Accumulates canonical block processing for trie dumping
 
@@ -113,16 +113,16 @@ type BlockChain struct {
 	procmu  sync.RWMutex // block processor lock
 
 	checkpoint       int          // checkpoint counts towards the new checkpoint
-	currentBlock     atomic.Value // Current head of the block chain
-	currentFastBlock atomic.Value // Current head of the fast-sync chain (may be above the block chain!)
+	currentBlock     atomic.Value //:当前规范链的头区块 Current head of the block chain
+	currentFastBlock atomic.Value //:快速同步模式的头区块，可能比主链长？ Current head of the fast-sync chain (may be above the block chain!)
 
 	//:cachingDB
 	stateCache    state.Database // State database to reuse between imports (contains state cache)
-	bodyCache     *lru.Cache     // Cache for the most recent block bodies
-	bodyRLPCache  *lru.Cache     // Cache for the most recent block bodies in RLP encoded format
+	bodyCache     *lru.Cache     //:最近区块体缓存 Cache for the most recent block bodies
+	bodyRLPCache  *lru.Cache     //:最近区块体RLP缓存 Cache for the most recent block bodies in RLP encoded format
 	receiptsCache *lru.Cache     // Cache for the most recent receipts per block
-	blockCache    *lru.Cache     // Cache for the most recent entire blocks
-	futureBlocks  *lru.Cache     // future blocks are blocks added for later processing //:暂时还不能插入的blocks，未来可能可以插入
+	blockCache    *lru.Cache     //:最近完整区块的缓存 Cache for the most recent entire blocks
+	futureBlocks  *lru.Cache     //:暂时还不能插入链的blocks future blocks are blocks added for later processing
 
 	quit    chan struct{} // blockchain quit channel
 	running int32         // running must be called atomically
@@ -138,13 +138,14 @@ type BlockChain struct {
 	validator Validator // block and state validator interface
 	vmConfig  vm.Config
 
-	badBlocks      *lru.Cache              // Bad block cache //:错误的blocks
+	badBlocks      *lru.Cache              // Bad block cache //:错误的blocks，来自DAO
 	shouldPreserve func(*types.Block) bool // Function used to determine whether should preserve the given block.
 }
 
 // NewBlockChain returns a fully initialised block chain using information
 // available in the database. It initialises the default Ethereum Validator and
 // Processor.
+//:geth -> mekeFullNode -> RegisterEthService -> eth.New ->
 func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *params.ChainConfig, engine consensus.Engine, vmConfig vm.Config, shouldPreserve func(block *types.Block) bool) (*BlockChain, error) {
 	if cacheConfig == nil {
 		cacheConfig = &CacheConfig{
@@ -198,12 +199,13 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		return nil, err
 	}
 	// Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
-	// 查找本地区块链上有硬分叉的区块，有则调用bc.SetHead回滚到硬分叉前一个块
+	// 查找本地区块链上有error的区块，有则调用bc.SetHead回滚到error前一个块
 	for hash := range BadHashes {
 		if header := bc.GetHeaderByHash(hash); header != nil {
 			// get the canonical block corresponding to the offending header's number
 			headerByNumber := bc.GetHeaderByNumber(header.Number.Uint64())
 			// make sure the headerByNumber (if present) is in our current canonical chain
+			//:如果badBlock没有在当前规范链上，则不作任何操作，否则回滚至前一个块
 			if headerByNumber != nil && headerByNumber.Hash() == header.Hash() {
 				log.Error("Found bad hash, rewinding chain", "number", header.Number, "hash", header.ParentHash)
 				bc.SetHead(header.Number.Uint64() - 1)
@@ -514,10 +516,13 @@ func (bc *BlockChain) ExportN(w io.Writer, first uint64, last uint64) error {
 // Note, this function assumes that the `mu` mutex is held!
 func (bc *BlockChain) insert(block *types.Block) {
 	// If the block is on a side chain or an unknown one, force other heads onto it too
+	//:读出待插入区块高度在规范链上的hash，如果不等于块hash，需要更新head
 	updateHeads := rawdb.ReadCanonicalHash(bc.db, block.NumberU64()) != block.Hash()
 
 	// Add the block to the canonical chain number scheme and mark as the head
+	//:更新规范链上此高度hash为本块hash
 	rawdb.WriteCanonicalHash(bc.db, block.Hash(), block.NumberU64())
+	//:写入规范链，更新数据库的lastBlock
 	rawdb.WriteHeadBlockHash(bc.db, block.Hash())
 
 	bc.currentBlock.Store(block)
@@ -868,6 +873,7 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 			continue
 		}
 		// Compute all the non-consensus fields of the receipts
+		//:用block.transactions填充recepts
 		if err := SetReceiptsData(bc.chainConfig, block, receipts); err != nil {
 			return i, fmt.Errorf("failed to set receipts data: %v", err)
 		}
@@ -957,11 +963,14 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	externTd := new(big.Int).Add(block.Difficulty(), ptd)
 
 	// Irrelevant of the canonical status, write the block itself to the database
+	//:一、总难度Td写入数据库，key: 'h'+num+hash+'t'
 	if err := bc.hc.WriteTd(block.Hash(), block.NumberU64(), externTd); err != nil {
 		return NonStatTy, err
 	}
+	//:二、将区块header和body写入数据库，header key为'h'+num+hash，body key为'b'+num+hash
 	rawdb.WriteBlock(bc.db, block)
 
+	//:三、提交新stateDB到数据库
 	root, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
 	if err != nil {
 		return NonStatTy, err
@@ -978,6 +987,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 		triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
 		bc.triegc.Push(root, -int64(block.NumberU64()))
 
+		//:缓存的trie超出了缓存内存上限，提交trie并移除之
 		if current := block.NumberU64(); current > triesInMemory {
 			// If we exceeded our memory allowance, flush matured singleton nodes to disk
 			var (
@@ -1022,6 +1032,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	}
 
 	// Write other block data using a batch.
+	//:四、将交易执行收据写入数据库，key: 'r'+num+hash
 	batch := bc.db.NewBatch()
 	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
 
@@ -1052,6 +1063,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 			}
 		}
 		// Write the positional metadata for transaction/receipt lookups and preimages
+		//:写入交易查询入口信息
 		rawdb.WriteTxLookupEntries(batch, block)
 		rawdb.WritePreimages(batch, state.Preimages())
 
@@ -1059,14 +1071,23 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	} else {
 		status = SideStatTy
 	}
+
+	//:将batch写入数据库
 	if err := batch.Write(); err != nil {
 		return NonStatTy, err
 	}
 
 	// Set new head.
 	if status == CanonStatTy {
+		//:如果这个区块可以插入本地规范链，就将它插入
+		//:1、更新规范链上区块号对应的hash值
+		//:2、更新数据库中的“LastBlock”的值
+		//:3、更新BlockChain的CurrentBlock
+		//:4、纠正HeaderChain的错误延伸
 		bc.insert(block)
 	}
+
+	//:从futureBlock中移除插入的block
 	bc.futureBlocks.Remove(block.Hash())
 	return status, nil
 }
@@ -1156,7 +1177,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 	// Peek the error for the first block to decide the directing import logic
 	it := newInsertIterator(chain, results, bc.Validator())
 
-	//:InsertIterator.next()中调用BlockValidator.ValidatorBody()返回error
+	//:next中阻塞等待verifyHeader.results返回，没有error则继续BlockValidator.ValidatorBody()校验body然后返回error
 	block, err := it.next()
 
 	//:因为已经校验了传入chain的连续性，所以只要校验首块能否本地链的块链接
@@ -1200,6 +1221,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 		return it.index, events, coalescedLogs, err
 	}
 	// No validation errors for the first block (or chain prefix skipped)
+	//:没有error则遍历所有的block，在next()中校验header和body，然后Process他们
 	for ; block != nil && err == nil; block, err = it.next() {
 		// If the chain is terminating, stop processing blocks
 		if atomic.LoadInt32(&bc.procInterrupt) == 1 {
@@ -1219,12 +1241,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 		if parent == nil {
 			parent = bc.GetBlock(block.ParentHash(), block.NumberU64()-1)
 		}
-		//:为每个block创建stateDB，root为父块hash，即在父块trie基础上修改数据
+		//:为每个block创建stateDB，root为父块trie根，即在父块trie基础上修改数据
 		state, err := state.New(parent.Root(), bc.stateCache)
 		if err != nil {
 			return it.index, events, coalescedLogs, err
 		}
 		// Process block using the parent state as reference point.
+		//:执行transactions，返回执行recepts、log以及块使用的总gas
 		t0 := time.Now()
 		receipts, logs, usedGas, err := bc.processor.Process(block, state, bc.vmConfig)
 		t1 := time.Now()
@@ -1253,6 +1276,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 		blockValidationTimer.Update(t2.Sub(t1))
 		blockWriteTimer.Update(t3.Sub(t2))
 		switch status {
+		//:插入的是规范链
 		case CanonStatTy:
 			log.Debug("Inserted new block", "number", block.Number(), "hash", block.Hash(),
 				"uncles", len(block.Uncles()), "txs", len(block.Transactions()), "gas", block.GasUsed(),
@@ -1266,6 +1290,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 			// Only count canonical blocks for GC processing time
 			bc.gcproc += proctime
 
+		//:插入的是分叉
 		case SideStatTy:
 			log.Debug("Inserted forked block", "number", block.Number(), "hash", block.Hash(),
 				"diff", block.Difficulty(), "elapsed", common.PrettyDuration(time.Since(start)),
@@ -1297,6 +1322,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 	stats.ignored += it.remaining()
 
 	// Append a single chain head event if we've progressed the chain
+	//:校验插入的是否是头区块，是则发送ChainHead事件
 	if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 		events = append(events, ChainHeadEvent{lastCanon})
 	}
@@ -1456,6 +1482,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		}
 	)
 	// Reduce the longer chain to the same number as the shorter one
+	//:使新旧链高度一致，旧链长就把多于块中的交易拿出来回收
 	if oldBlock.NumberU64() > newBlock.NumberU64() {
 		// Old chain is longer, gather all transactions and logs as deleted ones
 		for ; oldBlock != nil && oldBlock.NumberU64() != newBlock.NumberU64(); oldBlock = bc.GetBlock(oldBlock.ParentHash(), oldBlock.NumberU64()-1) {
@@ -1477,6 +1504,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	}
 	// Both sides of the reorg are at the same number, reduce both until the common
 	// ancestor is found
+	//:找出新旧链的共同祖先
 	for {
 		// If the common ancestor was found, bail out
 		if oldBlock.Hash() == newBlock.Hash() {
@@ -1512,6 +1540,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		log.Error("Impossible reorg, please file an issue", "oldnum", oldBlock.Number(), "oldhash", oldBlock.Hash(), "newnum", newBlock.Number(), "newhash", newBlock.Hash())
 	}
 	// Insert the new chain, taking care of the proper incremental order
+	//:从共同祖先位置开始插入新链
 	for i := len(newChain) - 1; i >= 0; i-- {
 		// Insert the block in the canonical way, re-writing history
 		bc.insert(newChain[i])
@@ -1526,6 +1555,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	}
 	// When transactions get deleted from the database, the receipts that were
 	// created in the fork must also be deleted
+	//:找出旧链删除也不在新链添加的交易，删除交易的key
 	batch := bc.db.NewBatch()
 	for _, tx := range types.TxDifference(deletedTxs, addedTxs) {
 		rawdb.DeleteTxLookupEntry(batch, tx.Hash())
@@ -1539,6 +1569,7 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	//
 	// TODO(karalabe): Can we get rid of the goroutine somehow to guarantee correct
 	// event ordering?
+	//:异步向外发送区块重组与日志删除事件
 	go func() {
 		if len(deletedLogs) > 0 {
 			bc.rmLogsFeed.Send(RemovedLogsEvent{deletedLogs})
@@ -1640,6 +1671,7 @@ Error: %v
 // because nonces can be verified sparsely, not needing to check each.
 func (bc *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (int, error) {
 	start := time.Now()
+	//:校验，HeaderChain.ValidateHeaderChain -> engine.VerifyHeaders -> engine.VerifyHeader
 	if i, err := bc.hc.ValidateHeaderChain(chain, checkFreq); err != nil {
 		return i, err
 	}
@@ -1655,6 +1687,7 @@ func (bc *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 		bc.mu.Lock()
 		defer bc.mu.Unlock()
 
+		//:写入header到db
 		_, err := bc.hc.WriteHeader(header)
 		return err
 	}

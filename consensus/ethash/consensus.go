@@ -125,8 +125,11 @@ func (ethash *Ethash) VerifyHeaders(chain consensus.ChainReader, headers []*type
 		errors = make([]error, len(headers))
 		abort  = make(chan struct{})
 	)
+
+	//:并发校验header
 	for i := 0; i < workers; i++ {
 		go func() {
+			//:index:[0,len(headers))
 			for index := range inputs {
 				errors[index] = ethash.verifyHeaderWorker(chain, headers, seals, index)
 				done <- index
@@ -139,16 +142,19 @@ func (ethash *Ethash) VerifyHeaders(chain consensus.ChainReader, headers []*type
 		defer close(inputs)
 		var (
 			in, out = 0, 0
+			//:保存headers[index]是否执行完verifyHeaderWorker
 			checked = make([]bool, len(headers))
 			inputs  = inputs
 		)
 		for {
 			select {
+			//:按顺序递增index->inputs->verifyHeaderWorker
 			case inputs <- in:
 				if in++; in == len(headers) {
 					// Reached end of headers. Stop sending to workers.
 					inputs = nil
 				}
+			//:verifyHeaderWorker完成后，将其返回值errors[index]发送到errorsOut
 			case index := <-done:
 				for checked[index] = true; checked[out]; out++ {
 					errorsOut <- errors[out]
@@ -188,12 +194,14 @@ func (ethash *Ethash) VerifyUncles(chain consensus.ChainReader, block *types.Blo
 		return nil
 	}
 	// Verify that there are at most 2 uncles included in this block
+	//:uncles不可以超过2
 	if len(block.Uncles()) > maxUncles {
 		return errTooManyUncles
 	}
 	// Gather the set of past uncles and ancestors
 	uncles, ancestors := mapset.NewSet(), make(map[common.Hash]*types.Header)
 
+	//:找到此block的7世祖先
 	number, parent := block.NumberU64()-1, block.ParentHash()
 	for i := 0; i < 7; i++ {
 		ancestor := chain.GetBlock(parent, number)
@@ -213,15 +221,18 @@ func (ethash *Ethash) VerifyUncles(chain consensus.ChainReader, block *types.Blo
 	for _, uncle := range block.Uncles() {
 		// Make sure every uncle is rewarded only once
 		hash := uncle.Hash()
+		//:包含的uncle以及被自己或祖块包含过
 		if uncles.Contains(hash) {
 			return errDuplicateUncle
 		}
 		uncles.Add(hash)
 
 		// Make sure the uncle has a valid ancestry
+		//:uncle块是block的祖先
 		if ancestors[hash] != nil {
 			return errUncleIsAncestor
 		}
+		//:叔块与当前块没有共同祖先，或者叔块是当前块的分叉
 		if ancestors[uncle.ParentHash] == nil || uncle.ParentHash == block.ParentHash() {
 			return errDanglingUncle
 		}
@@ -237,35 +248,43 @@ func (ethash *Ethash) VerifyUncles(chain consensus.ChainReader, block *types.Blo
 // See YP section 4.3.4. "Block Header Validity"
 func (ethash *Ethash) verifyHeader(chain consensus.ChainReader, header, parent *types.Header, uncle bool, seal bool) error {
 	// Ensure that the header's extra-data section is of a reasonable size
+	//:验证extra字段是否超过字节限制
 	if uint64(len(header.Extra)) > params.MaximumExtraDataSize {
 		return fmt.Errorf("extra-data too long: %d > %d", len(header.Extra), params.MaximumExtraDataSize)
 	}
 	// Verify the header's timestamp
+	//:验证区块是否来自未来，来自未来的非叔块则ErrFutureBlock
 	if !uncle {
 		if header.Time > uint64(time.Now().Add(allowedFutureBlockTime).Unix()) {
 			return consensus.ErrFutureBlock
 		}
 	}
+
+	//:不能早于父块出块时间
 	if header.Time <= parent.Time {
 		return errZeroBlockTime
 	}
 	// Verify the block's difficulty based in it's timestamp and parent's difficulty
+	//:计算difficulty计算是否有误
 	expected := ethash.CalcDifficulty(chain, header.Time, parent)
 
 	if expected.Cmp(header.Difficulty) != 0 {
 		return fmt.Errorf("invalid difficulty: have %v, want %v", header.Difficulty, expected)
 	}
 	// Verify that the gas limit is <= 2^63-1
+	//:验证gasLimit值是否合法
 	cap := uint64(0x7fffffffffffffff)
 	if header.GasLimit > cap {
 		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, cap)
 	}
 	// Verify that the gasUsed is <= gasLimit
+	//:验证区块gasUsed不超过gasLimit
 	if header.GasUsed > header.GasLimit {
 		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
 	}
 
 	// Verify that the gas limit remains within allowed bounds
+	//:两个块之间的GasLimit差别不能超过一定比例
 	diff := int64(parent.GasLimit) - int64(header.GasLimit)
 	if diff < 0 {
 		diff *= -1
@@ -276,19 +295,23 @@ func (ethash *Ethash) verifyHeader(chain consensus.ChainReader, header, parent *
 		return fmt.Errorf("invalid gas limit: have %d, want %d += %d", header.GasLimit, parent.GasLimit, limit)
 	}
 	// Verify that the block number is parent's +1
+	//:验证区块高度合法
 	if diff := new(big.Int).Sub(header.Number, parent.Number); diff.Cmp(big.NewInt(1)) != 0 {
 		return consensus.ErrInvalidNumber
 	}
 	// Verify the engine specific seal securing the block
+	//:校验挖矿digest与result是否正确
 	if seal {
 		if err := ethash.VerifySeal(chain, header); err != nil {
 			return err
 		}
 	}
 	// If all checks passed, validate any special fields for hard forks
+	//:处理DAO事件的区块头
 	if err := misc.VerifyDAOHeaderExtraData(chain.Config(), header); err != nil {
 		return err
 	}
+	//:验证硬分叉区块头，如果是叔块则不验证
 	if err := misc.VerifyForkHashes(chain.Config(), header, uncle); err != nil {
 		return err
 	}
@@ -533,12 +556,17 @@ func (ethash *Ethash) verifySeal(chain consensus.ChainReader, header *types.Head
 
 		// Caches are unmapped in a finalizer. Ensure that the cache stays alive
 		// until after the call to hashimotoLight so it's not unmapped while being used.
+		//:这里用runtime.KeepAlive，因为cache对象未被外部引用，其内存在栈上分配
+		//:cache.cache是切片的首地址，是引用对象，所以hashimotoLight传入的是地址拷贝
 		runtime.KeepAlive(cache)
 	}
 	// Verify the calculated values against the ones provided in the header
+	//:验证摘要digest的正确性
 	if !bytes.Equal(header.MixDigest[:], digest) {
 		return errInvalidMixDigest
 	}
+
+	//:验证result <= target
 	target := new(big.Int).Div(two256, header.Difficulty)
 	if new(big.Int).SetBytes(result).Cmp(target) > 0 {
 		return errInvalidPoW

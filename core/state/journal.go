@@ -38,7 +38,7 @@ type journalEntry interface {
 //:保存所有的journalEntry，通过journalIndex访问指定的journalEntry
 type journal struct {
 	entries []journalEntry         // Current changes tracked by the journal
-	dirties map[common.Address]int // Dirty accounts and the number of changes
+	dirties map[common.Address]int //:记录账户变动的次数 Dirty accounts and the number of changes
 }
 
 // newJournal create a new initialized journal.
@@ -59,11 +59,13 @@ func (j *journal) append(entry journalEntry) {
 // revert undoes a batch of journalled modifications along with any reverted
 // dirty handling too.
 func (j *journal) revert(statedb *StateDB, snapshot int) {
+	//:从后往前逐一revert
 	for i := len(j.entries) - 1; i >= snapshot; i-- {
 		// Undo the changes made by the operation
 		j.entries[i].revert(statedb)
 
 		// Drop any dirty tracking induced by the change
+		//:删除账户变动的dirty标记
 		if addr := j.entries[i].dirtied(); addr != nil {
 			if j.dirties[*addr]--; j.dirties[*addr] == 0 {
 				delete(j.dirties, *addr)

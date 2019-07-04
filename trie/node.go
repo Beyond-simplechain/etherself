@@ -153,6 +153,7 @@ func decodeShort(hash, elems []byte, cachegen uint16) (node, error) {
 	}
 	flag := nodeFlag{hash: hash, gen: cachegen}
 	key := compactToHex(kbuf)
+	//:有终结符，则是叶子节点，否则为扩展节点
 	if hasTerm(key) {
 		// value node
 		val, _, err := rlp.SplitString(rest)

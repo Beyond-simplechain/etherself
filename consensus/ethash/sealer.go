@@ -152,8 +152,6 @@ func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan s
 	logger := log.New("miner", id)
 	logger.Trace("Started ethash search for new nonces", "seed", seed)
 
-	//fmt.Println("cc", "difficulty:", header.Difficulty, "nonce:", nonce, "target:", target)
-
 search:
 	for {
 		select {
@@ -171,13 +169,14 @@ search:
 				attempts = 0
 			}
 			// Compute the PoW value of this nonce
-			//:凑出nonce后将nonce写入header然后填充block生成完整的块
+			//:凑nonce执行POW计算出摘要digest和结果result
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
+			//:result <= target即为正确答案，将符合条件的nonce写入header然后填充block生成完整的块
 			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
 				// Correct nonce found, create a new header with it
 				header = types.CopyHeader(header)
 				header.Nonce = types.EncodeNonce(nonce)
-				header.MixDigest = common.BytesToHash(digest)
+				header.MixDigest = common.BytesToHash(digest) //:摘要
 
 				// Seal and return a block (if still needed)
 				select {

@@ -133,6 +133,7 @@ func (gpo *Oracle) SuggestPrice(ctx context.Context) (*big.Int, error) {
 	}
 	price := lastPrice
 	if len(blockPrices) > 0 {
+		//:取最高gasPrice的60%
 		sort.Sort(bigIntArray(blockPrices))
 		price = blockPrices[(len(blockPrices)-1)*gpo.percentile/100]
 	}
@@ -170,11 +171,13 @@ func (gpo *Oracle) getBlockPrices(ctx context.Context, signer types.Signer, bloc
 	blockTxs := block.Transactions()
 	txs := make([]*types.Transaction, len(blockTxs))
 	copy(txs, blockTxs)
+	//:将block取出的tx由gasPrice从大到小排序
 	sort.Sort(transactionsByGasPrice(txs))
 
 	for _, tx := range txs {
 		sender, err := types.Sender(signer, tx)
 		if err == nil && sender != block.Coinbase() {
+			//:取出最小的gasPrice
 			ch <- getBlockPricesResult{tx.GasPrice(), nil}
 			return
 		}

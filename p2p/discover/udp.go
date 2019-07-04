@@ -276,6 +276,7 @@ func newUDP(c conn, ln *enode.LocalNode, cfg Config) (*Table, *udp, error) {
 
 	udp.wg.Add(2)
 	go udp.loop()
+	//:处理收到的UDP包
 	go udp.readLoop(cfg.Unhandled)
 	return udp.tab, udp, nil
 }

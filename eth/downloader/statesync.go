@@ -75,6 +75,7 @@ func (d *Downloader) syncState(root common.Hash) *stateSync {
 func (d *Downloader) stateFetcher() {
 	for {
 		select {
+		//:sync block state one by one
 		case s := <-d.stateSyncStart:
 			for next := s; next != nil; {
 				next = d.runStateSync(next)
@@ -125,6 +126,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 
 		select {
 		// The stateSync lifecycle:
+		//:另一个stateSync申请运行，退出这个
 		case next := <-d.stateSyncStart:
 			return next
 
@@ -283,6 +285,7 @@ func (s *stateSync) loop() (err error) {
 	peerSub := s.d.peers.SubscribeNewPeers(newPeer)
 	defer peerSub.Unsubscribe()
 	defer func() {
+		//:提交membatch剩余的数据到stateDB
 		cerr := s.commit(true)
 		if err == nil {
 			err = cerr
@@ -290,7 +293,9 @@ func (s *stateSync) loop() (err error) {
 	}()
 
 	// Keep assigning new tasks until the sync completes or aborts
+	//:只有在我们需要请求state时才loop
 	for s.sched.Pending() > 0 {
+		//:membatch超过100KB时，提交membatch到stateDB
 		if err = s.commit(false); err != nil {
 			return err
 		}
@@ -306,11 +311,11 @@ func (s *stateSync) loop() (err error) {
 		case <-s.d.cancelCh:
 			return errCancelStateFetch
 
-		//:接收从Download.stateFetcher中获取的req.response，插入到statDB.Trie中
+		//:接收从Download.runStateSync中获取的req.response，插入到statDB.Trie中
 		case req := <-s.deliver:
 			// Response, disconnect or timeout triggered, drop the peer if stalling
 			log.Trace("Received node data response", "peer", req.peer.id, "count", len(req.response), "dropped", req.dropped, "timeout", !req.dropped && req.timedOut())
-			//:item少于2，没有drop也不是因为timeout的错误没有item的话，就drop掉这个错误节点
+			//:item少于2，没有drop过也不是因为timeout的错误没有item的话，就drop掉这个错误节点
 			if len(req.items) <= 2 && !req.dropped && req.timedOut() {
 				// 2 items are the minimum requested, if even that times out, we've no use of
 				// this peer at the moment.
@@ -418,6 +423,7 @@ func (s *stateSync) process(req *stateReq) (int, error) {
 
 	// Iterate over all the delivered data and inject one-by-one into the trie
 	for _, blob := range req.response {
+		//:提交trie node到membatch
 		_, hash, err := s.processNodeData(blob)
 		switch err {
 		case nil:

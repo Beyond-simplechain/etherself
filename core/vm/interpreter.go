@@ -162,6 +162,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 	// Reset the previous call's return data. It's unimportant to preserve the old buffer
 	// as every returning call will return new data anyway.
+	//:清空之前调用结果
 	in.returnData = nil
 
 	// Don't bother with the execution if there's no code.
@@ -211,15 +212,19 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
+		//:按pc获取指令
 		op = contract.GetOp(pc)
+		//:获取指令的操作
 		operation := in.cfg.JumpTable[op]
 		if !operation.valid {
 			return nil, fmt.Errorf("invalid opcode 0x%x", int(op))
 		}
+		//:检测堆栈上的参数是否符合操作函数的要求
 		if err := operation.validateStack(stack); err != nil {
 			return nil, err
 		}
 		// If the operation is valid, enforce and write restrictions
+		//:解释器只读，遇到写操作直接返回error
 		if err := in.enforceRestrictions(op, operation, stack); err != nil {
 			return nil, err
 		}
@@ -227,6 +232,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		var memorySize uint64
 		// calculate the new memory size and expand the memory to fit
 		// the operation
+		//:判断指令需要的内存是否足够
 		if operation.memorySize != nil {
 			memSize, overflow := bigUint64(operation.memorySize(stack))
 			if overflow {
@@ -234,12 +240,14 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			}
 			// memory is expanded in words of 32 bytes. Gas
 			// is also calculated in words.
+			//:足够则以32byte为单位扩充内存，并计算gas
 			if memorySize, overflow = math.SafeMul(toWordSize(memSize), 32); overflow {
 				return nil, errGasUintOverflow
 			}
 		}
 		// consume the gas and return an error if not enough gas is available.
 		// cost is explicitly set so that the capture state defer method can get the proper cost
+		//:获取指令操作需要的gas，然后从交易余额中扣除
 		cost, err = operation.gasCost(in.gasTable, in.evm, contract, stack, mem, memorySize)
 		if err != nil || !contract.UseGas(cost) {
 			return nil, ErrOutOfGas
@@ -254,6 +262,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 
 		// execute the operation
+		//:执行指令操作
 		res, err := operation.execute(&pc, in, contract, mem, stack)
 		// verifyPool is a build flag. Pool verification makes sure the integrity
 		// of the integer pool by comparing values to a default value.
@@ -262,6 +271,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 		// if the operation clears the return data (e.g. it has returning data)
 		// set the last return to the result of the operation.
+		//:如果指令有返回，就将返回值复制给returnData
 		if operation.returns {
 			in.returnData = res
 		}
@@ -273,7 +283,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			return res, errExecutionReverted
 		case operation.halts:
 			return res, nil
-		case !operation.jumps:
+		case !operation.jumps: //:非jump指令则++pc
 			pc++
 		}
 	}

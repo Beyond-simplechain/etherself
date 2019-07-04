@@ -67,13 +67,13 @@ const (
 type Table struct {
 	mutex   sync.Mutex        // protects buckets, bucket content, nursery, rand
 	buckets [nBuckets]*bucket // index of known nodes by distance
-	nursery []*node           // bootstrap nodes
+	nursery []*node           //:启动种子节点 bootstrap nodes
 	rand    *mrand.Rand       // source of randomness, periodically reseeded
 	ips     netutil.DistinctNetSet
 
 	db         *enode.DB // database of known nodes
 	net        transport
-	refreshReq chan chan struct{}
+	refreshReq chan chan struct{} //:刷新K捅信号
 	initDone   chan struct{}
 
 	closeOnce sync.Once
@@ -112,6 +112,7 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node) (*Table, error
 		rand:       mrand.New(mrand.NewSource(0)),
 		ips:        netutil.DistinctNetSet{Subnet: tableSubnet, Limit: tableIPLimit},
 	}
+	//:获得以太坊官方提供的5个信任节点
 	if err := tab.setFallbackNodes(bootnodes); err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node) (*Table, error
 		}
 	}
 	tab.seedRand()
-	tab.loadSeedNodes()
+	tab.loadSeedNodes() //:随机获取本地db的至多30个节点
 
 	go tab.loop()
 	return tab, nil
@@ -250,21 +251,26 @@ func (tab *Table) LookupRandom() []*enode.Node {
 func (tab *Table) lookup(targetKey encPubkey, refreshIfEmpty bool) []*node {
 	var (
 		target         = enode.ID(crypto.Keccak256Hash(targetKey[:]))
-		asked          = make(map[enode.ID]bool)
-		seen           = make(map[enode.ID]bool)
+		asked          = make(map[enode.ID]bool) //:被访问过并接收到返回result切片的节点
+		seen           = make(map[enode.ID]bool) //:在其他节点返回的result切片中但还没有访问过的节点
 		reply          = make(chan []*node, alpha)
 		pendingQueries = 0
 		result         *nodesByDistance
 	)
 	// don't query further if we hit ourself.
 	// unlikely to happen often in practice.
+	//:不需要询问自己
 	asked[tab.self().ID()] = true
+
+	//:一、从桶中查找16个离targetID最近的16个节点
 
 	for {
 		tab.mutex.Lock()
 		// generate initial result set
-		result = tab.closest(target, bucketSize)
+		//:遍历table中每个节点，获取距离目标最近的16个节点，初始化result切片
+		result = tab.closest(target, bucketSize /*=16*/)
 		tab.mutex.Unlock()
+		//:找到节点或者上次循环没有获取到初始节点，退出循环
 		if len(result.entries) > 0 || !refreshIfEmpty {
 			break
 		}
@@ -272,41 +278,51 @@ func (tab *Table) lookup(targetKey encPubkey, refreshIfEmpty bool) []*node {
 		// We actually wait for the refresh to complete here. The very
 		// first query will hit this case and run the bootstrapping
 		// logic.
+		//:一个都没找到，从数据库重新加载种子节点
 		<-tab.refresh()
 		refreshIfEmpty = false
 	}
 
+	//:二、存在result，对result中节点的临近节点查询
+
 	for {
 		// ask the alpha closest nodes that we haven't asked yet
+		//:并发查询，最多3个goroutine
 		for i := 0; i < len(result.entries) && pendingQueries < alpha; i++ {
 			n := result.entries[i]
-			if !asked[n.ID()] {
+			if !asked[n.ID()] { //:只查询未查询过的节点
 				asked[n.ID()] = true
 				pendingQueries++
 				go tab.findnode(n, targetKey, reply)
 			}
 		}
+		//:如果没有goroutine在请求，说明result中的节点都是最新的，且都询问过
 		if pendingQueries == 0 {
 			// we have asked all closest nodes, stop the search
 			break
 		}
+
+		//:处理goroutine返回值
 		select {
 		case nodes := <-reply:
 			for _, n := range nodes {
 				if n != nil && !seen[n.ID()] {
 					seen[n.ID()] = true
+					//:push函数将节点放入result中，保证result数量不超过16
 					result.push(n, bucketSize)
 				}
 			}
 		case <-tab.closeReq:
 			return nil // shutdown, no need to continue.
 		}
+		//:到这里（select收到了消息）说明某个节点返回了结果，pendingQueries减少后又可以启动新的go程
 		pendingQueries--
 	}
 	return result.entries
 }
 
 func (tab *Table) findnode(n *node, targetKey encPubkey, reply chan<- []*node) {
+	//:此节点查询失败的次数会被保存在nodeDB中
 	fails := tab.db.FindFails(n.ID(), n.IP())
 	r, err := tab.net.findnode(n.ID(), n.addr(), targetKey)
 	if err == errClosed {
@@ -317,6 +333,7 @@ func (tab *Table) findnode(n *node, targetKey encPubkey, reply chan<- []*node) {
 		fails++
 		tab.db.UpdateFindFails(n.ID(), n.IP(), fails)
 		log.Trace("Findnode failed", "id", n.ID(), "failcount", fails, "err", err)
+		//:失败5次以上，会删除此节点
 		if fails >= maxFindnodeFailures {
 			log.Trace("Too many findnode failures, dropping", "id", n.ID(), "failcount", fails)
 			tab.delete(n)
@@ -346,7 +363,7 @@ func (tab *Table) refresh() <-chan struct{} {
 // loop schedules refresh, revalidate runs and coordinates shutdown.
 func (tab *Table) loop() {
 	var (
-		revalidate     = time.NewTimer(tab.nextRevalidateTime())
+		revalidate     = time.NewTimer(tab.nextRevalidateTime()) //:验证节点是否可以ping通的时间通道
 		refresh        = time.NewTicker(refreshInterval)
 		copyNodes      = time.NewTicker(copyNodesInterval)
 		refreshDone    = make(chan struct{})           // where doRefresh reports completion
@@ -363,12 +380,14 @@ func (tab *Table) loop() {
 loop:
 	for {
 		select {
+		//:定时每30min刷新K桶
 		case <-refresh.C:
 			tab.seedRand()
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
 				go tab.doRefresh(refreshDone)
 			}
+		//:请求刷新K桶
 		case req := <-tab.refreshReq:
 			waiting = append(waiting, req)
 			if refreshDone == nil {
@@ -380,12 +399,14 @@ loop:
 				close(ch)
 			}
 			waiting, refreshDone = nil, nil
+		//:每10s验证K桶的有效性
 		case <-revalidate.C:
 			revalidateDone = make(chan struct{})
 			go tab.doRevalidate(revalidateDone)
 		case <-revalidateDone:
 			revalidate.Reset(tab.nextRevalidateTime())
 			revalidateDone = nil
+		//:定时30s将稳定节点存入数据库，如果此节点在K桶中存活5min以上
 		case <-copyNodes.C:
 			go tab.copyLiveNodes()
 		case <-tab.closeReq:
@@ -418,6 +439,7 @@ func (tab *Table) doRefresh(done chan struct{}) {
 
 	// Run self lookup to discover new neighbor nodes.
 	// We can only do this if we have a secp256k1 identity.
+	//:通过自己节点id来发现邻居节点
 	var key ecdsa.PublicKey
 	if err := tab.self().Load((*enode.Secp256k1)(&key)); err == nil {
 		tab.lookup(encodePubkey(&key), false)
@@ -429,8 +451,10 @@ func (tab *Table) doRefresh(done chan struct{}) {
 	// (not hash-sized) and it is not easily possible to generate a
 	// sha3 preimage that falls into a chosen bucket.
 	// We perform a few lookups with a random target instead.
+	//:随机target来搜索节点
 	for i := 0; i < 3; i++ {
 		var target encPubkey
+		//:随机读取一个target
 		crand.Read(target[:])
 		tab.lookup(target, false)
 	}

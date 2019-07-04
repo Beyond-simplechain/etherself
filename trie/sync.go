@@ -172,11 +172,12 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 
 	for i, item := range results {
 		// If the item was not requested, bail out
-		//:必须是我们请求的hash才处理
 		request := s.requests[item.Hash]
+		//:必须是我们请求的hash才处理
 		if request == nil {
 			return committed, i, ErrNotRequested
 		}
+		//:已经执行过的
 		if request.data != nil {
 			return committed, i, ErrAlreadyProcessed
 		}
@@ -196,10 +197,12 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 		request.data = item.Data
 
 		// Create and schedule a request for all the children nodes
+		//:找出他的子节点
 		requests, err := s.children(request, node)
 		if err != nil {
 			return committed, i, err
 		}
+		//:没有子节点，直接提交，否则在提交子节点的时候提交
 		if len(requests) == 0 && request.deps == 0 {
 			s.commit(request)
 			committed = true

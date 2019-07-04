@@ -67,25 +67,25 @@ type Config struct {
 
 	// MaxPeers is the maximum number of peers that can be
 	// connected. It must be greater than zero.
-	MaxPeers int
+	MaxPeers int //:可连接最大节点数
 
 	// MaxPendingPeers is the maximum number of peers that can be pending in the
 	// handshake phase, counted separately for inbound and outbound connections.
 	// Zero defaults to preset values.
-	MaxPendingPeers int `toml:",omitempty"`
+	MaxPendingPeers int `toml:",omitempty"` //:在握手阶段可以挂起的最大对等点数量
 
 	// DialRatio controls the ratio of inbound to dialed connections.
 	// Example: a DialRatio of 2 allows 1/2 of connections to be dialed.
 	// Setting DialRatio to zero defaults it to 3.
-	DialRatio int `toml:",omitempty"`
+	DialRatio int `toml:",omitempty"` //:拨号比率控制入站与拨号连接的比率。例如:拨号比率为2允许1/2的连接被拨号。设置拨号比率为零默认为3。
 
 	// NoDiscovery can be used to disable the peer discovery mechanism.
 	// Disabling is useful for protocol debugging (manual topology).
-	NoDiscovery bool
+	NoDiscovery bool //:禁用节点发现机制
 
 	// DiscoveryV5 specifies whether the new topic-discovery based V5 discovery
 	// protocol should be started or not.
-	DiscoveryV5 bool `toml:",omitempty"`
+	DiscoveryV5 bool `toml:",omitempty"` //:是否启用discv5协议
 
 	// Name sets the node name of this server.
 	// Use common.MakeName to create a name that follows existing conventions.
@@ -93,24 +93,27 @@ type Config struct {
 
 	// BootstrapNodes are used to establish connectivity
 	// with the rest of the network.
-	BootstrapNodes []*enode.Node
+	BootstrapNodes []*enode.Node //:用于建立与网络其余部分的连接。
 
 	// BootstrapNodesV5 are used to establish connectivity
 	// with the rest of the network using the V5 discovery
 	// protocol.
-	BootstrapNodesV5 []*discv5.Node `toml:",omitempty"`
+	BootstrapNodesV5 []*discv5.Node `toml:",omitempty"` //:用于建立与网络其余部分的V5连接。
 
 	// Static nodes are used as pre-configured connections which are always
 	// maintained and re-connected on disconnects.
+	//:静态节点用作预先配置的连接，在断开连接时总是维护和重新连接。
 	StaticNodes []*enode.Node
 
 	// Trusted nodes are used as pre-configured connections which are always
 	// allowed to connect, even above the peer limit.
+	//:可信节点被用作预先配置的连接，这些连接总是允许连接的，甚至超过对等限制
 	TrustedNodes []*enode.Node
 
 	// Connectivity can be restricted to certain IP networks.
 	// If this option is set to a non-nil value, only hosts which match one of the
 	// IP networks contained in the list are considered.
+	//:连接可以被限制到某些IP网络。如果将此选项设置为非nil值，则只考虑与列表中包含的IP网络之一匹配的主机
 	NetRestrict *netutil.Netlist `toml:",omitempty"`
 
 	// NodeDatabase is the path to the database containing the previously seen
@@ -443,6 +446,7 @@ func (srv *Server) Start() (err error) {
 	srv.peerOp = make(chan peerOpFunc)
 	srv.peerOpDone = make(chan struct{})
 
+	//:监听本地TCP端口用于信息应答
 	if err := srv.setupLocalNode(); err != nil {
 		return err
 	}
@@ -451,13 +455,16 @@ func (srv *Server) Start() (err error) {
 			return err
 		}
 	}
+	//:一、配置Server的网络，生成路由表
 	if err := srv.setupDiscovery(); err != nil {
 		return err
 	}
 
+	//:二、生成DialState用于驱动维护本地peer的更新与死亡
 	dynPeers := srv.maxDialedConns()
 	dialer := newDialState(srv.localnode.ID(), srv.StaticNodes, srv.BootstrapNodes, srv.ntab, dynPeers, srv.NetRestrict)
 	srv.loopWG.Add(1)
+	//:维护peer的goroutine
 	go srv.run(dialer)
 	return nil
 }
@@ -607,8 +614,10 @@ func (srv *Server) run(dialstate dialer) {
 	defer srv.nodedb.Close()
 
 	var (
+		//:所有建立连接的peer
 		peers        = make(map[enode.ID]*Peer)
 		inboundCount = 0
+		//:信任的节点，因为dial其他节点的时候都要进行验证，对信任的节点可以加速验证过程
 		trusted      = make(map[enode.ID]bool, len(srv.TrustedNodes))
 		taskdone     = make(chan task, maxActiveDialTasks)
 		runningTasks []task
@@ -658,12 +667,15 @@ running:
 		case <-srv.quit:
 			// The server was stopped. Run the cleanup logic.
 			break running
+
+		//:new dial task
 		case n := <-srv.addstatic:
 			// This channel is used by AddPeer to add to the
 			// ephemeral static peer list. Add it to the dialer,
 			// it will keep the node connected.
 			srv.log.Trace("Adding static node", "node", n)
 			dialstate.addStatic(n)
+
 		case n := <-srv.removestatic:
 			// This channel is used by RemovePeer to send a
 			// disconnect request to a peer and begin the
@@ -673,6 +685,7 @@ running:
 			if p, ok := peers[n.ID()]; ok {
 				p.Disconnect(DiscRequested)
 			}
+
 		case n := <-srv.addtrusted:
 			// This channel is used by AddTrustedPeer to add an enode
 			// to the trusted node set.
@@ -682,6 +695,7 @@ running:
 			if p, ok := peers[n.ID()]; ok {
 				p.rw.set(trustedConn, true)
 			}
+
 		case n := <-srv.removetrusted:
 			// This channel is used by RemoveTrustedPeer to remove an enode
 			// from the trusted node set.
@@ -697,6 +711,7 @@ running:
 			// This channel is used by Peers and PeerCount.
 			op(peers)
 			srv.peerOpDone <- struct{}{}
+
 		case t := <-taskdone:
 			// A task got done. Tell dialstate about it so it
 			// can update its state and remove it from the active
@@ -704,6 +719,7 @@ running:
 			srv.log.Trace("Dial task done", "task", t)
 			dialstate.taskDone(t, time.Now())
 			delTask(t)
+
 		case c := <-srv.posthandshake:
 			// A connection has passed the encryption handshake so
 			// the remote identity is known (but hasn't been verified yet).

@@ -861,16 +861,19 @@ func (q *queue) deliver(id string, taskPool map[common.Hash]*types.Header, taskQ
 		accepted++
 
 		// Clean up a successful fetch
+		//:成功设置为nil
 		request.Headers[i] = nil
 		delete(taskPool, hash)
 	}
 	// Return all failed or missing fetches to the queue
+	//:失败重新加入fetch队列
 	for _, header := range request.Headers {
 		if header != nil {
 			taskQueue.Push(header, -int64(header.Number.Uint64()))
 		}
 	}
 	// Wake up Results
+	//:唤醒active信号，使得queue.Results()执行
 	if accepted > 0 {
 		q.active.Signal()
 	}

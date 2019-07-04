@@ -64,7 +64,7 @@ type StateDB struct {
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	//:stateObject缓存
 	stateObjects map[common.Address]*stateObject
-	//:用来缓存被修改过的stateObjects
+	//:用来缓存被修改过，还没有提交到diskDB中去的stateObjects
 	stateObjectsDirty map[common.Address]struct{}
 
 	// DB error.
@@ -378,6 +378,8 @@ func (self *StateDB) Suicide(addr common.Address) bool {
 		prev:        stateObject.suicided,
 		prevbalance: new(big.Int).Set(stateObject.Balance()),
 	})
+
+	//:标记删除，余额情0
 	stateObject.markSuicided()
 	stateObject.data.Balance = new(big.Int)
 
@@ -447,6 +449,7 @@ func (self *StateDB) GetOrNewStateObject(addr common.Address) *stateObject {
 
 // createObject creates a new state object. If there is an existing account with
 // the given address, it is overwritten and returned as the second return value.
+//:如果原地址存在就reset到初始状态
 func (self *StateDB) createObject(addr common.Address) (newobj, prev *stateObject) {
 	prev = self.getStateObject(addr)
 	newobj = newObject(self, addr, Account{})
@@ -563,7 +566,9 @@ func (self *StateDB) RevertToSnapshot(revid int) {
 	snapshot := self.validRevisions[idx].journalIndex
 
 	// Replay the journal to undo changes and remove invalidated snapshots
+	//:调用日志中的revert函数进行恢复
 	self.journal.revert(self, snapshot)
+	//:移除恢复点后面的快照
 	self.validRevisions = self.validRevisions[:idx]
 }
 
@@ -577,6 +582,7 @@ func (self *StateDB) GetRefund() uint64 {
 //:将缓存中的stateObject写入到trie，数据仍在内存，没有commit到文件
 func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 	for addr := range s.journal.dirties {
+		//:验证这个账户在stateObjects中存在，否则跳过
 		stateObject, exist := s.stateObjects[addr]
 		if !exist {
 			// ripeMD is 'touched' at block 1714175, in tx 0x1237f737031e40bcde4a8b7e717b2d15e3ecadfe49bb1bbc71ee9deb09c6fcf2
@@ -588,21 +594,26 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			continue
 		}
 
+		//:如果账户已经销毁，从状态树中删除账户；如果账户为空，且deleteEmptyObjects标志为true，则也删除
 		if stateObject.suicided || (deleteEmptyObjects && stateObject.empty()) {
 			s.deleteStateObject(stateObject)
 		} else {
+			//:将账户变更写入trie并计算新root
 			stateObject.updateRoot(s.db)
 			s.updateStateObject(stateObject)
 		}
+		//:账户trie被更改，但是stateDB的trie还未更新，所以设置dirty标记
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Invalidate journal because reverting across transactions is not allowed.
+	//:更新到trie中的无法用日志回滚，删除日志
 	s.clearJournalAndRefund()
 }
 
 // IntermediateRoot computes the current root hash of the state trie.
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
+//:更新s.trie，计算新的root，更新后无法回滚
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	s.Finalise(deleteEmptyObjects)
 	return s.trie.Hash()
@@ -623,6 +634,7 @@ func (s *StateDB) clearJournalAndRefund() {
 }
 
 // Commit writes the state to the underlying in-memory trie database.
+//:将内存中trie的变更提交到底层数据库
 func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) {
 	defer s.clearJournalAndRefund()
 
@@ -634,26 +646,31 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 	for addr, stateObject := range s.stateObjects {
 		_, isDirty := s.stateObjectsDirty[addr]
 		switch {
+		//:销毁账户处理
 		case stateObject.suicided || (isDirty && deleteEmptyObjects && stateObject.empty()):
 			// If the object has been removed, don't bother syncing it
 			// and just mark it for deletion in the trie.
 			s.deleteStateObject(stateObject)
+		//:内存中更新过的账户
 		case isDirty:
 			// Write any contract code associated with the state object
+			//:合约code有更新
 			if stateObject.code != nil && stateObject.dirtyCode {
 				s.db.TrieDB().InsertBlob(common.BytesToHash(stateObject.CodeHash()), stateObject.code)
 				stateObject.dirtyCode = false
 			}
+			//:提交stateObj的Trie到levelDB，并插入到stateDB的trie树中
 			// Write any storage changes in the state object to its storage trie.
 			if err := stateObject.CommitTrie(s.db); err != nil {
 				return common.Hash{}, err
 			}
 			// Update the object in the main account trie.
+			//:在内存上更新stateDB的trie
 			s.updateStateObject(stateObject)
 		}
 		delete(s.stateObjectsDirty, addr)
 	}
-	// Write trie changes.
+	//:提交stateDB的trie到levelDB  Write trie changes.
 	root, err = s.trie.Commit(func(leaf []byte, parent common.Hash) error {
 		var account Account
 		if err := rlp.DecodeBytes(leaf, &account); err != nil {

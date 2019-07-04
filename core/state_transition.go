@@ -49,13 +49,13 @@ The state transitioning model does all the necessary work to work out a valid ne
 6) Derive new state root
 */
 type StateTransition struct {
-	gp         *GasPool
-	msg        Message
-	gas        uint64
-	gasPrice   *big.Int //:gas的价格
-	initialGas uint64   //:交易初始gas，交易执行完(初始gas-剩余gas)即是花费gas，gas不足则交易失败
-	value      *big.Int //:转账的value
-	data       []byte
+	gp         *GasPool   //:header中的gas剩余额度
+	msg        Message    //:交易转化的msg
+	gas        uint64     //:交易的gas余额，开始为initialGas，随着交易执行减少
+	gasPrice   *big.Int   //:gas的价格
+	initialGas uint64     //:交易初始gas，交易执行完(初始gas-剩余gas)即是花费gas，gas不足则交易失败
+	value      *big.Int   //:转账的value
+	data       []byte     //:交易的input参数，创建合约交易则为合约code
 	state      vm.StateDB //:状态机
 	evm        *vm.EVM    //:虚拟机
 }
@@ -79,12 +79,14 @@ type Message interface {
 func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
+	//:合约创建tx或家园版本交易初始gas为53000，否则为21000
 	if contractCreation && homestead {
 		gas = params.TxGasContractCreation
 	} else {
 		gas = params.TxGas
 	}
 	// Bump the required gas by the amount of transactional data
+	//:根据data的大小计算gas值
 	if len(data) > 0 {
 		// Zero and non-zero bytes are priced differently
 		var nz uint64
@@ -154,12 +156,14 @@ func (st *StateTransition) buyGas() error {
 	if st.state.GetBalance(st.msg.From()).Cmp(mgval) < 0 {
 		return errInsufficientBalanceForGas
 	}
+	//:从总的gaspool减去预支gas
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
 	st.gas += st.msg.Gas()
 
 	st.initialGas = st.msg.Gas()
+	//:交易发起账户扣除gas消耗的花费
 	st.state.SubBalance(st.msg.From(), mgval)
 	return nil
 }
@@ -195,6 +199,7 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 	if err != nil {
 		return nil, 0, false, err
 	}
+	//:tx可用gas减去预支的gas
 	if err = st.useGas(gas); err != nil {
 		return nil, 0, false, err
 	}
@@ -219,11 +224,13 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 		// The only possible consensus-error would be if there wasn't
 		// sufficient balance to make the transfer happen. The first
 		// balance transfer may never fail.
+		//:EVM的错误为ErrInsufficientBalance时，不影响账户状态，失败回滚不会扣除gas
 		if vmerr == vm.ErrInsufficientBalance {
 			return nil, 0, false, vmerr
 		}
 	}
 	st.refundGas()
+	//:gas消耗奖励矿工
 	st.state.AddBalance(st.evm.Coinbase, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice))
 
 	return ret, st.gasUsed(), vmerr != nil, err

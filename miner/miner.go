@@ -41,11 +41,11 @@ type Backend interface {
 
 // Miner creates blocks and searches for proof-of-work values.
 type Miner struct {
-	mux      *event.TypeMux
+	mux      *event.TypeMux //:监听downloader事件调控挖矿是否运行
 	worker   *worker
-	coinbase common.Address
+	coinbase common.Address //:矿工地址
 	eth      Backend
-	engine   consensus.Engine
+	engine   consensus.Engine //:共识引擎POW、POA
 	exitCh   chan struct{}
 
 	canStart    int32 // can start indicates whether we can start the mining operation
@@ -82,6 +82,7 @@ func (self *Miner) update() {
 				return
 			}
 			switch ev.Data.(type) {
+			//:Downloader同步节点的链时，停止挖矿
 			case downloader.StartEvent:
 				atomic.StoreInt32(&self.canStart, 0)
 				if self.Mining() {
@@ -89,6 +90,7 @@ func (self *Miner) update() {
 					atomic.StoreInt32(&self.shouldStart, 1)
 					log.Info("Mining aborted due to sync")
 				}
+			//:Downloader同步完成后，重新开始挖矿
 			case downloader.DoneEvent, downloader.FailedEvent:
 				shouldStart := atomic.LoadInt32(&self.shouldStart) == 1
 
