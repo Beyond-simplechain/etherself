@@ -42,12 +42,12 @@ type operation struct {
 	// memorySize returns the memory size required for the operation
 	memorySize memorySizeFunc
 
-	halts   bool // indicates whether the operation should halt further execution
-	jumps   bool // indicates whether the program counter should not increment
-	writes  bool // determines whether this a state modifying operation
-	valid   bool // indication whether the retrieved operation is valid and known
-	reverts bool // determines whether the operation reverts state (implicitly halts)
-	returns bool // determines whether the operations sets the return data content
+	halts   bool //:表示操作是否停止进一步执行 indicates whether the operation should halt further execution
+	jumps   bool //:指示程序计数器是否不增加 indicates whether the program counter should not increment
+	writes  bool //:确定这是否是一个状态修改操作 determines whether this a state modifying operation
+	valid   bool //:指示检索到的操作是否有效并且已知 indication whether the retrieved operation is valid and known
+	reverts bool //:确定操作是否恢复状态 (隐式停止) determines whether the operation reverts state (implicitly halts)
+	returns bool //:确定操作是否设置了返回数据内容 determines whether the operations sets the return data content
 }
 
 var (

@@ -686,7 +686,7 @@ type CallArgs struct {
 func (s *PublicBlockChainAPI) doCall(ctx context.Context, args CallArgs, blockNr rpc.BlockNumber, timeout time.Duration, globalGasCap *big.Int) ([]byte, uint64, bool, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
-	//:使用的是指定block的stateDB拷贝，不会修改出块state的状态
+	//:使用的是指定block的stateDB拷贝，不会修改出块state的状态（will not commit stateDB）
 	state, header, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return nil, 0, false, err
@@ -803,6 +803,7 @@ func (s *PublicBlockChainAPI) EstimateGas(ctx context.Context, args CallArgs) (h
 		}
 	}
 	// Reject the transaction as invalid if it still fails at the highest allowance
+	//:lo+1>=hi,hi仍为cap，说明每次尝试都失败，此tx无法成功
 	if hi == cap {
 		if !executable(hi) {
 			return 0, fmt.Errorf("gas required exceeds allowance (%d) or always failing transaction", cap)

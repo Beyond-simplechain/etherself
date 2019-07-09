@@ -65,6 +65,7 @@ func (st *Stack) dup(pool *intPool, n int) {
 	st.push(pool.get().Set(st.data[st.len()-n]))
 }
 
+//:返回栈顶元素
 func (st *Stack) peek() *big.Int {
 	return st.data[st.len()-1]
 }

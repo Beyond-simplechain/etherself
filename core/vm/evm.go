@@ -246,6 +246,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	//:虚拟机执行失败，回滚仍要扣除gas
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
+		//:如果是require造成的错误则不扣gas
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}

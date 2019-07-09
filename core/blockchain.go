@@ -1473,8 +1473,10 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 					l := *log
 					if removed {
 						l.Removed = true
+						//:删除旧链log
 						deletedLogs = append(deletedLogs, &l)
 					} else {
+						//:增加新链log
 						rebirthLogs = append(rebirthLogs, &l)
 					}
 				}
