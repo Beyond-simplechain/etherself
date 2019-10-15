@@ -56,9 +56,12 @@ func newScheduler(idx uint) *scheduler {
 // run creates a retrieval pipeline, receiving section indexes from sections and
 // returning the results in the same order through the done channel. Concurrent
 // runs of the same scheduler are allowed, leading to retrieval task deduplication.
-func (s *scheduler) run(sections chan uint64, dist chan *request, done chan []byte, quit chan struct{}, wg *sync.WaitGroup) {
+func (s *scheduler) run(sections/*sectionSource*/ chan uint64, dist chan *request, done/*sectionSinks*/ chan []byte,
+	quit chan struct{}, wg *sync.WaitGroup) {
 	// Create a forwarder channel between requests and responses of the same size as
 	// the distribution channel (since that will block the pipeline anyway).
+	//:在请求和响应之间创建一个与分发通道大小相同的转发器通道（因为这样会阻塞管道）
+	//:pend保证了响应可以按请求顺序返回
 	pend := make(chan uint64, cap(dist))
 
 	// Start the pipeline schedulers to forward between user -> distributor -> user
@@ -113,16 +116,19 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 			s.lock.Unlock()
 
 			// Schedule the section for retrieval and notify the deliverer to expect this section
+			//:只有未处理过得才会发送给dist
 			if unique {
 				select {
 				case <-quit:
 					return
+				//:构造request后转发给dist
 				case dist <- &request{bit: s.bit, section: section}:
 				}
 			}
 			select {
 			case <-quit:
 				return
+			//:转发section给pend
 			case pend <- section:
 			}
 		}
@@ -155,12 +161,14 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 			select {
 			case <-quit:
 				return
+			//:阻塞等待response完成
 			case <-res.done:
 			}
 			// Deliver the result
 			select {
 			case <-quit:
 				return
+			//:结果发送给done
 			case done <- res.cached:
 			}
 		}
@@ -174,7 +182,8 @@ func (s *scheduler) deliver(sections []uint64, data [][]byte) {
 
 	for i, section := range sections {
 		if res := s.responses[section]; res != nil && res.cached == nil { // Avoid non-requests and double deliveries
-			res.cached = data[i]
+		//:将返回结果的data写入response.cached，并关闭res.done通知scheduleDeliveries
+		res.cached = data[i]
 			close(res.done)
 		}
 	}

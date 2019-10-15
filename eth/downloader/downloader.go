@@ -129,12 +129,12 @@ type Downloader struct {
 	committed       int32
 
 	// Channels
-	headerCh      chan dataPack        // [eth/62] Channel receiving inbound block headers
-	bodyCh        chan dataPack        // [eth/62] Channel receiving inbound block bodies
-	receiptCh     chan dataPack        // [eth/63] Channel receiving inbound receipts
-	bodyWakeCh    chan bool            // [eth/62] Channel to signal the block body fetcher of new tasks
-	receiptWakeCh chan bool            // [eth/63] Channel to signal the receipt fetcher of new tasks
-	headerProcCh  chan []*types.Header // [eth/62] Channel to feed the header processor new tasks
+	headerCh      chan dataPack        //:header输入通道，下载的header [eth/62] Channel receiving inbound block headers
+	bodyCh        chan dataPack        //:body输入通道，下载的body [eth/62] Channel receiving inbound block bodies
+	receiptCh     chan dataPack        //:receipts输入通道，下载的receipts [eth/63] Channel receiving inbound receipts
+	bodyWakeCh    chan bool            //:唤醒fetchPart(body), 传输body fetcher新任务 [eth/62] Channel to signal the block body fetcher of new tasks
+	receiptWakeCh chan bool            //:唤醒fetchPart(传输receipt), 传输receipt fetcher新任务 [eth/63] Channel to signal the receipt fetcher of new tasks
+	headerProcCh  chan []*types.Header //:为header处理者提供新任务 [eth/62] Channel to feed the header processor new tasks
 
 	// for stateFetcher
 	stateSyncStart chan *stateSync
@@ -900,8 +900,9 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 
 		//:->SendMessage(GetBlockHeadersMsg)
 		if skeleton {
-			//:获取区块头骨架，从from+uint64(MaxHeaderFetch128)-1高度开始，获取MaxSkeletonSize192个，跳过MaxHeaderFetch-1个
+			//:获取区块头骨架，从from+MaxHeaderFetch「128」-1高度开始，获取MaxSkeletonSize「192」个，跳过MaxHeaderFetch「128」-1个
 			p.log.Trace("Fetching skeleton headers", "count", MaxHeaderFetch, "from", from)
+			//:send GetBlockHeadersMsg
 			go p.peer.RequestHeadersByNumber(from+uint64(MaxHeaderFetch)-1, MaxSkeletonSize, MaxHeaderFetch-1, false)
 		} else {
 			//:获取所有区块头，从from开始，获取MaxHeaderFetch个
@@ -928,7 +929,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 			timeout.Stop()
 
 			// If the skeleton's finished, pull any remaining head headers directly from the origin
-			//:表示skeleton已经完成，把剩下需要的head以获取所有的方式全部获取
+			//:表示header骨架已经完成，把剩下需要的header以获取所有的方式全部获取
 			if packet.Items() == 0 && skeleton {
 				skeleton = false
 				getHeaders(from)
@@ -962,6 +963,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 			// If we received a skeleton batch, resolve internals concurrently
 			if skeleton {
 				//:收到一个skeleton，从其他节点下载headers进行填充
+				//:此处阻塞等待<-d.headerCh，除非收到weakCh的信号后会调用FetchHeaders
 				filled, proced, err := d.fillHeaderSkeleton(from, headers)
 				if err != nil {
 					p.log.Debug("Skeleton chain invalid", "err", err)
@@ -1082,7 +1084,7 @@ func (d *Downloader) fillHeaderSkeleton(from uint64, skeleton []*types.Header) (
 	//:2，如果d.queue.PendingHeaders有pending的headers，调用d.peers.HeaderIdlePeers获取到idle的peers
 	//:3，调用d.queue.ReserveHeaders把pending的headers储备到idle的peers里面
 	//:4，用idle的peers调用p.FetchHeaders(req.From, MaxHeaderFetch)去获取headers
-	err := d.fetchParts(errCancelHeaderFetch, d.headerCh, deliver, d.queue.headerContCh, expire,
+	err := d.fetchParts(errCancelHeaderFetch, d.headerCh/* <-headerCh */, deliver, d.queue.headerContCh, expire,
 		d.queue.PendingHeaders, d.queue.InFlightHeaders, throttle, reserve,
 		nil, fetch, d.queue.CancelHeaders, capacity, d.peers.HeaderIdlePeers, setIdle, "headers")
 
@@ -1453,7 +1455,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 					if chunk[len(chunk)-1].Number.Uint64()+uint64(fsHeaderForceVerify) > pivot {
 						frequency = 1
 					}
-					//:fast和light直接把header存入
+					//:fast和light直接把header通过HeaderChain存入到DB
 					if n, err := d.lightchain.InsertHeaderChain(chunk, frequency); err != nil {
 						// If some headers were inserted, add them too to the rollback list
 						//:有err则把成功插入的header加入到回滚列表中
@@ -1472,6 +1474,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 				// Unless we're doing light chains, schedule the headers for associated content retrieval
 				if d.mode == FullSync || d.mode == FastSync {
 					// If we've reached the allowed number of pending headers, stall a bit
+					//:当前queue已满，则阻塞等待
 					for d.queue.PendingBlocks() >= maxQueuedHeaders || d.queue.PendingReceipts() >= maxQueuedHeaders {
 						select {
 						case <-d.cancelCh:
@@ -1499,6 +1502,7 @@ func (d *Downloader) processHeaders(origin uint64, pivot uint64, td *big.Int) er
 			d.syncStatsLock.Unlock()
 
 			// Signal the content downloaders of the availablility of new tasks
+			//:唤醒body/receipt的weakCh，唤醒update发送body/receipt请求
 			for _, ch := range []chan bool{d.bodyWakeCh, d.receiptWakeCh} {
 				select {
 				case ch <- true:
@@ -1732,21 +1736,25 @@ func (d *Downloader) commitPivotBlock(result *fetchResult) error {
 // DeliverHeaders injects a new batch of block headers received from a remote
 // node into the download schedule.
 func (d *Downloader) DeliverHeaders(id string, headers []*types.Header) (err error) {
+	//:headerCh <- {headerPack}
 	return d.deliver(id, d.headerCh, &headerPack{id, headers}, headerInMeter, headerDropMeter)
 }
 
 // DeliverBodies injects a new batch of block bodies received from a remote node.
 func (d *Downloader) DeliverBodies(id string, transactions [][]*types.Transaction, uncles [][]*types.Header) (err error) {
+	//:bodyCh <- {bodyPack}
 	return d.deliver(id, d.bodyCh, &bodyPack{id, transactions, uncles}, bodyInMeter, bodyDropMeter)
 }
 
 // DeliverReceipts injects a new batch of receipts received from a remote node.
 func (d *Downloader) DeliverReceipts(id string, receipts [][]*types.Receipt) (err error) {
+	//:receiptCh <- {receiptPack}
 	return d.deliver(id, d.receiptCh, &receiptPack{id, receipts}, receiptInMeter, receiptDropMeter)
 }
 
 // DeliverNodeData injects a new batch of node state data received from a remote node.
 func (d *Downloader) DeliverNodeData(id string, data [][]byte) (err error) {
+	//:stateCh <- {statePack}
 	return d.deliver(id, d.stateCh, &statePack{id, data}, stateInMeter, stateDropMeter)
 }
 

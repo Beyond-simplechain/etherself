@@ -100,7 +100,7 @@ type ChainIndexer struct {
 func NewChainIndexer(chainDb, indexDb ethdb.Database, backend ChainIndexerBackend, section, confirm uint64, throttling time.Duration, kind string) *ChainIndexer {
 	c := &ChainIndexer{
 		chainDb:     chainDb,
-		indexDb:     indexDb,
+		indexDb:     indexDb, //:和chainDB同数据库，在插入key时添加了前缀"bloombits"
 		backend:     backend,
 		update:      make(chan struct{}, 1),
 		quit:        make(chan chan error),
@@ -197,6 +197,7 @@ func (c *ChainIndexer) eventLoop(currentHeader *types.Header, events chan ChainH
 	defer sub.Unsubscribe()
 
 	// Fire the initial new head event to start any outstanding processing
+	//:设置起始区块高度，触发之前为完成的操作
 	c.newHead(currentHeader.Number.Uint64(), false)
 
 	var (
@@ -210,6 +211,7 @@ func (c *ChainIndexer) eventLoop(currentHeader *types.Header, events chan ChainH
 			errc <- nil
 			return
 
+		//:收到ChainHeadEvent
 		case ev, ok := <-events:
 			// Received a new event, ensure it's not nil (closing) and update
 			if !ok {
@@ -218,16 +220,19 @@ func (c *ChainIndexer) eventLoop(currentHeader *types.Header, events chan ChainH
 				return
 			}
 			header := ev.Block.Header()
+			//:出现了分叉
 			if header.ParentHash != prevHash {
 				// Reorg to the common ancestor if needed (might not exist in light sync mode, skip reorg then)
 				// TODO(karalabe, zsfelfoldi): This seems a bit brittle, can we detect this case explicitly?
 
+				//:找到共同祖先，重建共同祖先之后的索引
 				if rawdb.ReadCanonicalHash(c.chainDb, prevHeader.Number.Uint64()) != prevHash {
 					if h := rawdb.FindCommonAncestor(c.chainDb, prevHeader, header); h != nil {
 						c.newHead(h.Number.Uint64(), true)
 					}
 				}
 			}
+			//:设置新来块的header
 			c.newHead(header.Number.Uint64(), false)
 
 			prevHeader, prevHash = header, header.Hash()
@@ -241,9 +246,9 @@ func (c *ChainIndexer) newHead(head uint64, reorg bool) {
 	defer c.lock.Unlock()
 
 	// If a reorg happened, invalidate all sections until that point
-	if reorg {
+	if reorg { //:出现分叉，重建从head开始的全部索引
 		// Revert the known section number to the reorg point
-		known := head / c.sectionSize
+		known := head / c.sectionSize/*4096*/
 		stored := known
 		if known < c.checkpointSections {
 			known = 0
@@ -256,9 +261,11 @@ func (c *ChainIndexer) newHead(head uint64, reorg bool) {
 		}
 		// Revert the stored sections from the database to the reorg point
 		if stored < c.storedSections {
+			//:删除数据库中的section到stored
 			c.setValidSections(stored)
 		}
 		// Update the new head number to the finalized section end and notify children
+		//:生成新的head 并通知所有的子索引
 		head = known * c.sectionSize
 
 		if head < c.cascadedHead {
@@ -313,9 +320,9 @@ func (c *ChainIndexer) updateLoop() {
 		case <-c.update:
 			// Section headers completed (or rolled back), update the index
 			c.lock.Lock()
-			if c.knownSections > c.storedSections {
+			if c.knownSections > c.storedSections { //:如果当前以知的Section 大于已经存储的Section
 				// Periodically print an upgrade log message to the user
-				if time.Since(updated) > 8*time.Second {
+				if time.Since(updated) > 8*time.Second { //:每隔8秒打印日志
 					if c.knownSections > c.storedSections+1 {
 						updating = true
 						c.log.Info("Upgrading chain index", "percentage", c.storedSections*100/c.knownSections)
@@ -326,6 +333,7 @@ func (c *ChainIndexer) updateLoop() {
 				section := c.storedSections
 				var oldHead common.Hash
 				if section > 0 {
+					//:获取section的最后一个区块的hash值。
 					oldHead = c.SectionHead(section - 1)
 				}
 				// Process the newly defined section in the background
@@ -389,6 +397,7 @@ func (c *ChainIndexer) processSection(section uint64, lastHead common.Hash) (com
 		return common.Hash{}, err
 	}
 
+	//:读出section+1中所有块的header
 	for number := section * c.sectionSize; number < (section+1)*c.sectionSize; number++ {
 		hash := rawdb.ReadCanonicalHash(c.chainDb, number)
 		if hash == (common.Hash{}) {

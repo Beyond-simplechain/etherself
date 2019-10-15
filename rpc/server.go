@@ -165,6 +165,7 @@ func (s *Server) serveRequest(ctx context.Context, codec ServerCodec, singleShot
 				codec.Write(codec.CreateErrorResponse(nil, err))
 			}
 			// Error or end of stream, wait for requests and tear down
+			//:遇到错误，阻塞等待所有request处理完毕后直接返回
 			pend.Wait()
 			return nil
 		}
@@ -185,6 +186,7 @@ func (s *Server) serveRequest(ctx context.Context, codec ServerCodec, singleShot
 			return nil
 		}
 		// If a single shot request is executing, run and return immediately
+		//:是短连接，执行完后不再阻塞，直接返回
 		if singleShot {
 			if batch {
 				s.execBatch(ctx, codec, reqs)
@@ -194,6 +196,7 @@ func (s *Server) serveRequest(ctx context.Context, codec ServerCodec, singleShot
 			return nil
 		}
 		// For multi-shot connections, start a goroutine to serve and loop back
+		//:是长连接，加入wait队列，在新的goroutine中执行
 		pend.Add(1)
 
 		go func(reqs []*serverRequest, batch bool) {
@@ -281,6 +284,7 @@ func (s *Server) handle(ctx context.Context, codec ServerCodec, req *serverReque
 		}
 
 		// active the subscription after the sub id was successfully sent to the client
+		//:激活subscription，在exec中等待codec.CreateResponse(req.id, subid)这个response被发送给客户端之后被调用（避免客户端还没有收到subscription ID的时候就收到了subscription信息）。
 		activateSub := func() {
 			notifier, _ := NotifierFromContext(ctx)
 			notifier.activate(subid, req.svcname)
@@ -306,6 +310,7 @@ func (s *Server) handle(ctx context.Context, codec ServerCodec, req *serverReque
 	}
 
 	// execute RPC method and return result
+	//:调用注册的rpc方法
 	reply := req.callb.method.Func.Call(arguments)
 	if len(reply) == 0 {
 		return codec.CreateResponse(req.id, nil), nil
@@ -327,6 +332,7 @@ func (s *Server) exec(ctx context.Context, codec ServerCodec, req *serverRequest
 	if req.err != nil {
 		response = codec.CreateErrorResponse(&req.id, req.err)
 	} else {
+		//:执行request，返回response
 		response, callback = s.handle(ctx, codec, req)
 	}
 
@@ -336,6 +342,7 @@ func (s *Server) exec(ctx context.Context, codec ServerCodec, req *serverRequest
 	}
 
 	// when request was a subscribe request this allows these subscriptions to be actived
+	//:注册类型的调用，在写完response后调用active
 	if callback != nil {
 		callback()
 	}
@@ -400,11 +407,13 @@ func (s *Server) readRequest(codec ServerCodec) ([]*serverRequest, bool, Error) 
 			continue
 		}
 
+		//:没有注册服务，返回methodNotFoundError
 		if svc, ok = s.services[r.service]; !ok { // rpc method isn't available
 			requests[i] = &serverRequest{id: r.id, err: &methodNotFoundError{r.service, r.method}}
 			continue
 		}
 
+		//:订阅服务，注册method
 		if r.isPubSub { // eth_subscribe, r.method contains the subscription method name
 			if callb, ok := svc.subscriptions[r.method]; ok {
 				requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb}
@@ -423,6 +432,7 @@ func (s *Server) readRequest(codec ServerCodec) ([]*serverRequest, bool, Error) 
 			continue
 		}
 
+		//:返回callback method
 		if callb, ok := svc.callbacks[r.method]; ok { // lookup RPC method
 			requests[i] = &serverRequest{id: r.id, svcname: svc.name, callb: callb}
 			if r.params != nil && len(callb.argTypes) > 0 {

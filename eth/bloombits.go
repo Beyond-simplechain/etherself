@@ -57,7 +57,9 @@ func (eth *Ethereum) startBloomHandlers(sectionSize uint64) {
 				case <-eth.shutdownChan:
 					return
 
+				//:send by matcher.Multiplex
 				case request := <-eth.bloomRequests:
+					//:send by matcher.Multiplex
 					task := <-request
 					task.Bitsets = make([][]byte, len(task.Sections))
 					for i, section := range task.Sections {

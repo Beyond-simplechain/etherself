@@ -466,7 +466,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 		// Filter out any explicitly requested headers, deliver the rest to the downloader
-		//:过滤出任何非常明确的请求(如果只有1个header，任务它是名确的)，然后把剩下的投递给downloader
+		//:过滤出任何非常明确的请求(如果只有1个header，认为它是名确的)，然后把剩下的投递给downloader
 		filter := len(headers) == 1
 		if filter {
 			// If it's a potential sync progress check, validate the content and advertised chain weight
@@ -490,7 +490,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				p.Log().Debug("Whitelist block verified", "number", headers[0].Number.Uint64(), "hash", want)
 			}
 			// Irrelevant of the fork checks, send the header to the fetcher just in case
-			//:和分叉无关的header，就通过Fetcher过滤，并返回需要继续处理的header，投递给Downloader
+			//:通过Fetcher过滤，并返回fetcher未处理的header(不是fetcher请求的)，投递给Downloader
 			headers = pm.fetcher.FilterHeaders(p.id, headers, time.Now())
 		}
 		if len(headers) > 0 || !filter {

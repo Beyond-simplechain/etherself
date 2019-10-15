@@ -35,9 +35,10 @@ var (
 // Generator takes a number of bloom filters and generates the rotated bloom bits
 // to be used for batched filtering.
 type Generator struct {
-	blooms   [types.BloomBitLength][]byte // Rotated blooms for per-bit matching
-	sections uint                         // Number of sections to batch together
-	nextSec  uint                         // Next section to set when adding a bloom
+	//:比如第20个header的logBloom存储在 bloom[0:2048][20]
+	blooms             [types.BloomBitLength /*2048*/ ][ /*4096➗8*/ ]byte // Rotated blooms for per-bit matching
+	sections /*=4096*/ uint                                               // Number of sections to batch together
+	nextSec            uint                                               // Next section to set when adding a bloom
 }
 
 // NewGenerator creates a rotated bloom generator that can iteratively fill a
@@ -57,15 +58,15 @@ func NewGenerator(sections uint) (*Generator, error) {
 // in memory accordingly.
 func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 	// Make sure we're not adding more bloom filters than our capacity
-	if b.nextSec >= b.sections {
+	if b.nextSec >= b.sections { //://超过了section的最大数量
 		return errSectionOutOfBounds
 	}
-	if b.nextSec != index {
+	if b.nextSec != index { //:index是bloom在section中的下标
 		return errors.New("bloom filter with unexpected index")
 	}
 	// Rotate the bloom and insert into our collection
-	byteIndex := b.nextSec / 8
-	bitMask := byte(1) << byte(7-b.nextSec%8)
+	byteIndex := b.nextSec / 8 //:查找到对应的byte，需要设置这个byte位置
+	bitMask := byte(1) << byte(7-b.nextSec%8) //:找到需要设置值的bit在byte的下标
 
 	for i := 0; i < types.BloomBitLength; i++ {
 		bloomByteIndex := types.BloomByteLength - 1 - i/8
@@ -82,6 +83,7 @@ func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 
 // Bitset returns the bit vector belonging to the given bit index after all
 // blooms have been added.
+//:在所有的Blooms被添加之后，Bitset返回属于给定位索引的数据。
 func (b *Generator) Bitset(idx uint) ([]byte, error) {
 	if b.nextSec != b.sections {
 		return nil, errors.New("bloom not fully generated yet")

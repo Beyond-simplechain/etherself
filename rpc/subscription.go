@@ -141,6 +141,7 @@ func (n *Notifier) activate(id ID, namespace string) {
 		n.active[id] = sub
 		delete(n.inactive, id)
 		// Send buffered notifications.
+		//:发送执行结果到client
 		for _, data := range n.buffer[id] {
 			n.send(sub, data)
 		}

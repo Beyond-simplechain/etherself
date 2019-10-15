@@ -112,7 +112,7 @@ type Fetcher struct {
 	inject chan *inject   //:收到完整区块的通道
 
 	blockFilter  chan chan []*types.Block
-	headerFilter chan chan *headerFilterTask
+	headerFilter chan chan *headerFilterTask //:header过滤，拿走fetcher能处理的header
 	bodyFilter   chan chan *bodyFilterTask
 
 	done chan common.Hash
@@ -236,7 +236,7 @@ func (f *Fetcher) FilterHeaders(peer string, headers []*types.Header, time time.
 	}
 	// Request the filtering of the header list
 	select {
-	//:2、投递header是到filter
+	//:2、投递header任务到filter
 	case filter <- &headerFilterTask{peer: peer, headers: headers, time: time}:
 	case <-f.quit:
 		return nil
@@ -507,6 +507,7 @@ func (f *Fetcher) loop() {
 			headerFilterOutMeter.Mark(int64(len(unknown)))
 			select {
 			//:将unknown中的headers作为结果返回，投递到filter，由FilterHeaders接收
+			//:unknown中的header不是fetcher请求的，后续投递到Downloader
 			case filter <- &headerFilterTask{headers: unknown, time: task.time}:
 			case <-f.quit:
 				return

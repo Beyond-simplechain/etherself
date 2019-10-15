@@ -223,6 +223,7 @@ func (b *EthAPIBackend) BloomStatus() (uint64, uint64) {
 }
 
 func (b *EthAPIBackend) ServiceFilter(ctx context.Context, session *bloombits.MatcherSession) {
+	//:启用3个Multiplex协程处理filter
 	for i := 0; i < bloomFilterThreads; i++ {
 		go session.Multiplex(bloomRetrievalBatch, bloomRetrievalWait, b.eth.bloomRequests)
 	}

@@ -235,6 +235,7 @@ func (m *Matcher) run(begin, end uint64, buffer int, session *MatcherSession) ch
 			select {
 			case <-session.quit:
 				return
+			//:构造了subMatch的第一个源
 			case source <- &partialMatches{i, bytes.Repeat([]byte{0xff}, int(m.sectionSize/8))}:
 			}
 		}
@@ -243,6 +244,7 @@ func (m *Matcher) run(begin, end uint64, buffer int, session *MatcherSession) ch
 	next := source
 	dist := make(chan *request, buffer)
 
+	//:每个subMatch把上一个subMatch的返回结果作为自己的源
 	for _, bloom := range m.filters {
 		next = m.subMatch(next, dist, bloom, session)
 	}
@@ -263,8 +265,8 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 	sectionSinks := make([][3]chan []byte, len(bloom))
 	for i, bits := range bloom {
 		for j, bit := range bits {
-			sectionSources[i][j] = make(chan uint64, cap(source))
-			sectionSinks[i][j] = make(chan []byte, cap(source))
+			sectionSources[i][j] = make(chan uint64, cap(source)) //:scheduler输入通道
+			sectionSinks[i][j] = make(chan []byte, cap(source))   //:scheduler输出通道
 
 			m.schedulers[bit].run(sectionSources[i][j], dist, sectionSinks[i][j], session.quit, &session.pend)
 		}
@@ -274,11 +276,13 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 	results := make(chan *partialMatches, cap(source))
 
 	session.pend.Add(2)
+	//:处理scheduler输入
 	go func() {
 		// Tear down the goroutine and terminate all source channels
 		defer session.pend.Done()
 		defer close(process)
 
+		//:defer关闭所有输入通道
 		defer func() {
 			for _, bloomSources := range sectionSources {
 				for _, bitSource := range bloomSources {
@@ -308,6 +312,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 					}
 				}
 				// Notify the processor that this section will become available
+				//:所有source都发完消息，通知process
 				select {
 				case <-session.quit:
 					return
@@ -317,6 +322,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 		}
 	}()
 
+	//:处理scheduler输出
 	go func() {
 		// Tear down the goroutine and terminate the final sink channel
 		defer session.pend.Done()
@@ -364,7 +370,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 				if subres.bitset != nil {
 					bitutil.ANDBytes(orVector, orVector, subres.bitset)
 				}
-				if bitutil.TestBytes(orVector) {
+				if bitutil.TestBytes(orVector) { //:不全为0，则添加到结果channel，然后由下一个作为下一个subMatch的source。否则，直接被defer关闭通道
 					select {
 					case <-session.quit:
 						return
@@ -379,6 +385,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 
 // distributor receives requests from the schedulers and queues them into a set
 // of pending requests, which are assigned to retrievers wanting to fulfil them.
+//:分配指派任务
 func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 	defer session.pend.Done()
 
@@ -401,6 +408,7 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			fetcher <- bit
 		default:
 			// No retrievers active, start listening for new ones
+			//:没有立即收到fetcher，持续监听m.retrievers，bit存入unallocs等待处理
 			retrievers = m.retrievers
 			unallocs[bit] = struct{}{}
 		}
@@ -419,6 +427,7 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			// Pending requests not honoured in time, hard terminate
 			return
 
+		//:send by matcher.SubMatch() -> scheduler.scheduleRequests()
 		case req := <-dist:
 			// New retrieval request arrived to be distributed to some fetcher process
 			queue := requests[req.bit]
@@ -426,10 +435,13 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			requests[req.bit] = append(queue[:index], append([]uint64{req.section}, queue[index:]...)...)
 
 			// If it's a new bit and we have waiting fetchers, allocate to them
+			//:新bit指派给登台的fetcher
 			if len(queue) == 0 {
 				assign(req.bit)
 			}
 
+		//:收到新的fetcher，找到unallocs中最小的bit处理
+		//:send by matcher.Multiplex() -> AllocateRetrieval()
 		case fetcher := <-retrievers:
 			// New retriever arrived, find the lowest section-ed bit to assign
 			bit, best := uint(0), uint64(math.MaxUint64)
@@ -440,10 +452,12 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			}
 			// Stop tracking this bit (and alloc notifications if no more work is available)
 			delete(unallocs, bit)
+			//:如果所有的unallocs都处理完成，关闭m.retrievers的监听
 			if len(unallocs) == 0 {
 				retrievers = nil
 			}
 			allocs++
+			//:bit交给新来的fetcher处理
 			fetcher <- bit
 
 		case fetcher := <-m.counters:
@@ -467,6 +481,7 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 				assign(task.Bit)
 			}
 
+		//:send by EthApiBackend.ServiceFilter() -> this.Multiplex() -> scheduler.DeliverSections()
 		case result := <-m.deliveries:
 			// New retrieval task response from fetcher, split out missing sections and
 			// deliver complete ones
@@ -477,16 +492,20 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			)
 			for i, bitset := range result.Bitsets {
 				if len(bitset) == 0 {
+					//:结果有缺失，用missing记录下来
 					missing = append(missing, result.Sections[i])
 					continue
 				}
 				sections = append(sections, result.Sections[i])
 				bitsets = append(bitsets, bitset)
 			}
+
+			//:投递结果，关闭done通道
 			m.schedulers[result.Bit].deliver(sections, bitsets)
 			allocs--
 
 			// Reschedule missing sections and allocate bit if newly available
+			//:missing重新生成新的任务
 			if len(missing) > 0 {
 				queue := requests[result.Bit]
 				for _, section := range missing {
@@ -608,6 +627,7 @@ func (s *MatcherSession) DeliverSections(bit uint, sections []uint64, bitsets []
 func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan *Retrieval) {
 	for {
 		// Allocate a new bloom bit index to retrieve data for, stopping when done
+		//:获取新的fetcher bit
 		bit, ok := s.AllocateRetrieval()
 		if !ok {
 			return
@@ -635,10 +655,12 @@ func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan 
 			s.DeliverSections(bit, sections, make([][]byte, len(sections)))
 			return
 
+		//:将request投递给mux, 由bloombits.startBloomHandlers接收
 		case mux <- request:
 			// Retrieval accepted, something must arrive before we're aborting
 			request <- &Retrieval{Bit: bit, Sections: sections, Context: s.ctx}
 
+			//:send by bloombits.startBloomHandlers
 			result := <-request
 			if result.Error != nil {
 				s.err.Store(result.Error)

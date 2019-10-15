@@ -851,7 +851,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	defer w.mu.RUnlock()
 
 	tstart := time.Now()
-	parent := w.chain.CurrentBlock()
+	parent := w.chain.CurrentBlock() //:父块为当前链头块
 
 	//:父块出块时间大于现在系统时间，则将现在时间设置为父块时间之后
 	if parent.Time() >= uint64(timestamp) {
@@ -881,7 +881,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 			log.Error("Refusing to mine without etherbase")
 			return
 		}
-		header.Coinbase = w.coinbase
+		header.Coinbase = w.coinbase //:设置coinbase
 	}
 
 	//:计算新header的Difficulty
@@ -913,7 +913,7 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	// Create the current work task and check any fork transitions needed
 	env := w.current
 	if w.config.DAOForkSupport && w.config.DAOForkBlock != nil && w.config.DAOForkBlock.Cmp(header.Number) == 0 {
-		misc.ApplyDAOHardFork(env.state)
+		misc.ApplyDAOHardFork(env.state) //:回滚DAO事件，向DAO合约退款
 	}
 	// Accumulate the uncles for the current block
 	//:三、添加两个叔块到block中，优先选择本地叔块
@@ -969,6 +969,8 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 			localTxs[account] = txs
 		}
 	}
+
+	//:执行交易，保存回执到w.current.receipts中
 	if len(localTxs) > 0 {
 		txs := types.NewTransactionsByPriceAndNonce(w.current.signer, localTxs)
 		if w.commitTransactions(txs, w.coinbase, interrupt) {
@@ -997,7 +999,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 	}
 	s := w.current.state.Copy()
 	//:计算挖矿奖励（包括叔块奖励），提交stateDB生成root，并将txs、txReceipts打包成新的block
-	//:此时区块已经填充完毕，只需要计算出挖矿值就可完成此区块！
+	//:此时区块已经填充完毕(+uncle,+tx,+receipt)，只需要计算出挖矿值就可完成此区块！
 	block, err := w.engine.Finalize(w.chain, w.current.header, s, w.current.txs, uncles, w.current.receipts)
 	if err != nil {
 		return err
@@ -1008,6 +1010,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 			interval()
 		}
 		select {
+		//:交给taskLoop去计算此区块的nonce
 		case w.taskCh <- &task{receipts: receipts, state: s, block: block, createdAt: time.Now()}:
 			//:确认之前的所有块
 			w.unconfirmed.Shift(block.NumberU64() - 1)

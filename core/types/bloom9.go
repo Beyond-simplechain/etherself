@@ -91,8 +91,11 @@ func (b *Bloom) UnmarshalText(input []byte) error {
 	return hexutil.UnmarshalFixedText("Bloom", input, b[:])
 }
 
+//:创建收据的bloom
 func CreateBloom(receipts Receipts) Bloom {
 	bin := new(big.Int)
+	//:取得receipt里的日志，调用LogsBloom(receipt.Logs)将取得所有日志的bloom值按位或和到bloomBin。
+	//:这意味着bloomBin包括了所有日志的bloom9数据
 	for _, receipt := range receipts {
 		bin.Or(bin, LogsBloom(receipt.Logs))
 	}
@@ -103,6 +106,7 @@ func CreateBloom(receipts Receipts) Bloom {
 func LogsBloom(logs []*Log) *big.Int {
 	bin := new(big.Int)
 	for _, log := range logs {
+		//:把日志数据转成对应的bloom9值，包括日志的合约地址以及每个日志Topic
 		bin.Or(bin, bloom9(log.Address.Bytes()))
 		for _, b := range log.Topics {
 			bin.Or(bin, bloom9(b[:]))
@@ -113,12 +117,16 @@ func LogsBloom(logs []*Log) *big.Int {
 }
 
 func bloom9(b []byte) *big.Int {
+	//:首先将传入的数据，进行hash256的运算，得到一个32字节的hash
 	b = crypto.Keccak256(b)
 
 	r := new(big.Int)
 
+	//:然后取第0和第1字节的值合成一个2字节无符号的int
+	//:同理取第2,3 和第4,5字节合成另外两个无符号int，增加在bloom里面的命中率
 	for i := 0; i < 6; i += 2 {
 		t := big.NewInt(1)
+		//:和2047做按位与运算，得到一个小于2048的值b，这个值就表示bloom里面第b位的值为1。
 		b := (uint(b[i+1]) + (uint(b[i]) << 8)) & 2047
 		r.Or(r, t.Lsh(t, b))
 	}
@@ -128,6 +136,7 @@ func bloom9(b []byte) *big.Int {
 
 var Bloom9 = bloom9
 
+//:BloomLookup()方法查找对应的数据topic是否在bloom过滤器里面
 func BloomLookup(bin Bloom, topic bytesBacked) bool {
 	bloom := bin.Big()
 	cmp := bloom9(topic.Bytes())

@@ -336,11 +336,11 @@ func (q *queue) Schedule(headers []*types.Header, from uint64) []*types.Header {
 			continue
 		}
 		// Queue the header for content retrieval
-		//:header存入blockTaskQueue
+		//:blockTaskQueue中存放需要获取body的header
 		q.blockTaskPool[hash] = header
 		q.blockTaskQueue.Push(header, -int64(header.Number.Uint64()))
 
-		//:FastSync模式则还需要同步receipt
+		//:FastSync模式则还需要同步receipt，receiptTaskQueue中存放需要获取receipt的header
 		if q.mode == FastSync {
 			q.receiptTaskPool[hash] = header
 			q.receiptTaskQueue.Push(header, -int64(header.Number.Uint64()))
@@ -364,6 +364,7 @@ func (q *queue) Results(block bool) []*fetchResult {
 		if !block {
 			return nil
 		}
+		//:此处阻塞等待body fetch完成
 		q.active.Wait()
 		nproc = q.countProcessableItems()
 	}
