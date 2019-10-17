@@ -170,9 +170,9 @@ type Server struct {
 	localnode    *enode.LocalNode
 	ntab         discoverTable
 	listener     net.Listener
-	ourHandshake *protoHandshake
+	ourHandshake *protoHandshake //:协议握手RLP结构
 	lastLookup   time.Time
-	DiscV5       *discv5.Network
+	DiscV5       *discv5.Network //:discv5发现协议的topic-discovery网络
 
 	// These are for Peers, PeerCount (and nothing else).
 	peerOp     chan peerOpFunc
@@ -523,6 +523,7 @@ func (srv *Server) setupDiscovery() error {
 	if err != nil {
 		return err
 	}
+	//:监听udp连接
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return err

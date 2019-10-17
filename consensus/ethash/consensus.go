@@ -308,11 +308,11 @@ func (ethash *Ethash) verifyHeader(chain consensus.ChainReader, header, parent *
 		}
 	}
 	// If all checks passed, validate any special fields for hard forks
-	//:处理DAO事件的区块头
+	//:处理DAO事件的区块
 	if err := misc.VerifyDAOHeaderExtraData(chain.Config(), header); err != nil {
 		return err
 	}
-	//:验证硬分叉区块头，如果是叔块则不验证
+	//:验证硬分叉区块，如果是叔块则不验证
 	if err := misc.VerifyForkHashes(chain.Config(), header, uncle); err != nil {
 		return err
 	}
@@ -477,6 +477,7 @@ func calcDifficultyFrontier(time uint64, parent *types.Header) *big.Int {
 	bigTime.SetUint64(time)
 	bigParentTime.SetUint64(parent.Time)
 
+	//:时间差小于DurationLimit，调大难度，否则调小难度
 	if bigTime.Sub(bigTime, bigParentTime).Cmp(params.DurationLimit) < 0 {
 		diff.Add(parent.Difficulty, adjust)
 	} else {
@@ -486,6 +487,7 @@ func calcDifficultyFrontier(time uint64, parent *types.Header) *big.Int {
 		diff.Set(params.MinimumDifficulty)
 	}
 
+	//:每expDiffPeriod个块增加难度
 	periodCount := new(big.Int).Add(parent.Number, big1)
 	periodCount.Div(periodCount, expDiffPeriod)
 	if periodCount.Cmp(big1) > 0 {

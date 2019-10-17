@@ -337,6 +337,7 @@ func (db *nodeDB) querySeeds(n int, maxAge time.Duration) []*Node {
 	defer it.Release()
 
 seek:
+	//:随机选取30个node
 	for seeks := 0; len(nodes) < n && seeks < n*5; seeks++ {
 		// Seek to a random entry. The first byte is incremented by a
 		// random amount each time in order to increase the likelihood

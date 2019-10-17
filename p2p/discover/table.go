@@ -196,6 +196,7 @@ func (tab *Table) Close() {
 // setFallbackNodes sets the initial points of contact. These nodes
 // are used to connect to the network if the table is empty and there
 // are no known nodes in the database.
+//:设置信任节点
 func (tab *Table) setFallbackNodes(nodes []*enode.Node) error {
 	for _, n := range nodes {
 		if err := n.ValidateComplete(); err != nil {
@@ -406,7 +407,7 @@ loop:
 		case <-revalidateDone:
 			revalidate.Reset(tab.nextRevalidateTime())
 			revalidateDone = nil
-		//:定时30s将稳定节点存入数据库，如果此节点在K桶中存活5min以上
+		//:定时30s将稳定节点(存活超过5分钟的节点)存入数据库，如果此节点在K桶中存活5min以上
 		case <-copyNodes.C:
 			go tab.copyLiveNodes()
 		case <-tab.closeReq:
@@ -435,6 +436,7 @@ func (tab *Table) doRefresh(done chan struct{}) {
 	// Load nodes from the database and insert
 	// them. This should yield a few previously seen nodes that are
 	// (hopefully) still alive.
+	//:从DB中获取30个种子节点
 	tab.loadSeedNodes()
 
 	// Run self lookup to discover new neighbor nodes.
@@ -476,6 +478,7 @@ func (tab *Table) loadSeedNodes() {
 func (tab *Table) doRevalidate(done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 
+	//:随机取一个bucket中最后一个node
 	last, bi := tab.nodeToRevalidate()
 	if last == nil {
 		// No non-empty bucket found.
@@ -488,6 +491,7 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 	b := tab.buckets[bi]
+	//:可以ping通(无error)，将此node移动到bucket的首端
 	if err == nil {
 		// The node responded, move it to the front.
 		last.livenessChecks++
@@ -497,6 +501,7 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	}
 	// No reply received, pick a replacement or delete the node if there aren't
 	// any replacements.
+	//:用替补node替换last，没有替补则直接删除last
 	if r := tab.replace(b, last); r != nil {
 		log.Debug("Replaced dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks, "r", r.ID(), "rip", r.IP())
 	} else {
@@ -709,10 +714,12 @@ func (tab *Table) replace(b *bucket, last *node) *node {
 		return nil
 	}
 	// Still the last entry.
+	//:不存在可以替补的node，直接删除last
 	if len(b.replacements) == 0 {
 		tab.deleteInBucket(b, last)
 		return nil
 	}
+	//:用替补node替换last
 	r := b.replacements[tab.rand.Intn(len(b.replacements))]
 	b.replacements = deleteNode(b.replacements, r)
 	b.entries[len(b.entries)-1] = r

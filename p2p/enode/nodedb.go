@@ -293,6 +293,7 @@ func (db *DB) ensureExpirer() {
 
 // expirer should be started in a go routine, and is responsible for looping ad
 // infinitum and dropping stale data from the database.
+//:删除24小时前的nodes
 func (db *DB) expirer() {
 	tick := time.NewTicker(dbCleanupCycle)
 	defer tick.Stop()
