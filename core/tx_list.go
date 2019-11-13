@@ -101,7 +101,7 @@ func (m *txSortedMap) Forward(threshold uint64) types.Transactions {
 
 // Filter iterates over the list of transactions and removes all of them for which
 // the specified function evaluates to true.
-//:删除所有filter返回true的tx并返回
+//:删除所有filter function返回true的tx并返回
 func (m *txSortedMap) Filter(filter func(*types.Transaction) bool) types.Transactions {
 	var removed types.Transactions
 
@@ -311,7 +311,7 @@ func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions
 	removed := l.txs.Filter(func(tx *types.Transaction) bool { return tx.Cost().Cmp(costLimit) > 0 || tx.Gas() > gasLimit })
 
 	// If the list was strict, filter anything above the lowest nonce
-	//:过滤掉所有比removed中交易nonce大的交易，只有strict模式下才会执行
+	//:过滤掉所有比removed中交易最小nonce大的交易，只在strict模式下才会执行
 	var invalids types.Transactions
 
 	if l.strict && len(removed) > 0 {

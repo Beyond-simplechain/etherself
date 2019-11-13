@@ -225,7 +225,7 @@ type TxPool struct {
 	locals  *accountSet //:本地账户列表，来自①config.Locals, ②addLocals()  Set of local transaction to exempt from eviction rules
 	journal *txJournal  // Journal of local transaction to back up to disk //:local交易写入磁盘路径
 
-	pending map[common.Address]*txList   //:目前可以执行的交易（比如已经收到tx1后收到的tx2、tx3） All currently processable transactions
+	pending map[common.Address]*txList   //:目前可以执行的交易（账户nonce为2收到的tx2、tx3可以执行） All currently processable transactions
 	queue   map[common.Address]*txList   //:现在还不能执行的（比如未收到tx6却收到的tx7、tx8） Queued but non-processable transactions
 	beats   map[common.Address]time.Time //:每一个已知账号的最后一次交易时间  Last heartbeat from each known account
 	all     *txLookup                    //:全局交易列表 All transactions to allow lookups
@@ -688,7 +688,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 // the pool due to pricing constraints.
 func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 	// If the transaction is already known, discard it
-	//:如果交易已经获取，则直接丢弃
+	//:如果交易已经存在，则直接丢弃
 	hash := tx.Hash()
 	if pool.all.Get(hash) != nil {
 		log.Trace("Discarding already known transaction", "hash", hash)
@@ -705,7 +705,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 	//:如果txPool满了，删除price较低的交易
 	if uint64(pool.all.Count()) >= pool.config.GlobalSlots+pool.config.GlobalQueue {
 		// If the new transaction is underpriced, don't accept it
-		//:如果待插入的交易价值比当前最便宜的还要低，则直接丢弃
+		//:如果待插入的交易价值比当前最便宜的还要低，且不是本地发起的交易，则直接丢弃
 		if !local && pool.priced.Underpriced(tx, pool.locals) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "price", tx.GasPrice())
 			underpricedTxCounter.Inc(1)
@@ -1021,6 +1021,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 	var promoted []*types.Transaction
 
 	// Gather all the accounts potentially needing updates
+	//:nil更新所有account
 	if accounts == nil {
 		accounts = make([]common.Address, 0, len(pool.queue))
 		for addr := range pool.queue {
@@ -1042,7 +1043,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			pool.priced.Removed()
 		}
 		// Drop all transactions that are too costly (low balance or out of gas)
-		//:删除所有余额不足的交易（queue strict为false，所以不会返回无效交易表）
+		//:删除所有余额不足，或者超过maxGasLimit的交易（queue strict为false，所以不会暂时无法执行的交易）
 		drops, _ := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
@@ -1052,7 +1053,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			queuedNofundsCounter.Inc(1)
 		}
 		// Gather all executable transactions and promote them
-		//:可执行的，加入到pending
+		//:nonce条件符合可执行的，加入到pending
 		for _, tx := range list.Ready(pool.pendingState.GetNonce(addr)) {
 			hash := tx.Hash()
 			if pool.promoteTx(addr, hash, tx) {
@@ -1061,7 +1062,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			}
 		}
 		// Drop all transactions over the allowed limit
-		//:不可执行tx超过了每个addr的限制的，删除之
+		//:非本地rpc发来的交易，每个账户队列有限制，超出的交易会被移除
 		if !pool.locals.contains(addr) {
 			for _, tx := range list.Cap(int(pool.config.AccountQueue)) {
 				hash := tx.Hash()
@@ -1098,6 +1099,8 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 				spammers.Push(addr, int64(list.Len()))
 			}
 		}
+
+		//:防止拒绝服务攻击
 		// Gradually drop transactions from offenders
 		offenders := []common.Address{}
 		for pending > pool.config.GlobalSlots && !spammers.Empty() {
@@ -1214,7 +1217,7 @@ func (pool *TxPool) demoteUnexecutables() {
 			pool.priced.Removed()
 		}
 		// Drop all transactions that are too costly (low balance or out of gas), and queue any invalids back for later
-		//:返回余额不足和暂时无效的交易，余额不足的删除，暂时无效的存入queue等待执行机会
+		//:返回余额不足和暂时无效(drops中交易删除导致nonce大于他的交易暂时无法执行)的交易，余额不足的删除，暂时无效的存入queue等待执行机会
 		drops, invalids := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()

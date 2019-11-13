@@ -225,10 +225,12 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, value, nil
 	}
 	switch n := n.(type) {
+	//:叶子节点valueNode或扩展节点fullNode
 	case *shortNode:
+		//:算出新key与rootkey的公共部分
 		matchlen := prefixLen(key, n.Key)
 		// If the whole key matches, keep this short node as is
-		// and only update the value.
+		// and only update the value. //:完全匹配prefix，要么是扩展节点，要么是key完全相同的valueNode
 		if matchlen == len(n.Key) {
 			dirty, nn, err := t.insert(n.Val, append(prefix, key[:matchlen]...), key[matchlen:], value)
 			if !dirty || err != nil {
@@ -239,22 +241,26 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		// Otherwise branch out at the index where they differ.
 		branch := &fullNode{flags: t.newFlag()}
 		var err error
+		//:从matchlen开始插入root节点剩余的key，保存在branch节点的n.Key[matchlen]位置
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
 			return false, nil, err
 		}
+		//:插入新节点剩余的key，保存在branch节点的n.Key[matchlen]位置
 		_, branch.Children[key[matchlen]], err = t.insert(nil, append(prefix, key[:matchlen+1]...), key[matchlen+1:], value)
 		if err != nil {
 			return false, nil, err
 		}
 		// Replace this shortNode with the branch if it occurs at index 0.
+		//:如果没有公共前缀，直接将此shortNode替换成fullNode
 		if matchlen == 0 {
 			return true, branch, nil
 		}
-		// Otherwise, replace it with a short node leading up to the branch.
+		// Otherwise, replace it with a short node leading up to the branch
+		//:否则将公共前缀保存为shortNode，并链接到此fullNode，设置dirty标记
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
-	case *fullNode:
+	case *fullNode: //:在fullNode的key[0]位置插入新key，如果key[0]位置无节点，则直接创建shortNode->valueNode，否则继续构建分支节点fullNode(递归)
 		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
 			return false, n, err
@@ -265,6 +271,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, n, nil
 
 	case nil:
+		//:没有前置前置节点，直接创建一个新的shortNode->valueNode
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
 	case hashNode:

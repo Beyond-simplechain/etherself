@@ -65,6 +65,7 @@ func compactToHex(compact []byte) []byte {
 	return base[chop:]
 }
 
+//"[a,b,c] => [a/16,a%16,b/16,b%16,c/16,c%16,16]
 func keybytesToHex(str []byte) []byte {
 	l := len(str)*2 + 1
 	var nibbles = make([]byte, l)
@@ -72,7 +73,7 @@ func keybytesToHex(str []byte) []byte {
 		nibbles[i*2] = b / 16
 		nibbles[i*2+1] = b % 16
 	}
-	nibbles[l-1] = 16
+	nibbles[l-1] = 16 //:used for term
 	return nibbles
 }
 
