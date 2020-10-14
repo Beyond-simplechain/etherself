@@ -86,15 +86,15 @@ type ProtocolManager struct {
 	SubProtocols []p2p.Protocol //:子协议
 
 	eventMux      *event.TypeMux
-	txsCh         chan core.NewTxsEvent
+	txsCh         chan core.NewTxsEvent //:来自交易池的新交易
 	txsSub        event.Subscription
-	minedBlockSub *event.TypeMuxSubscription
+	minedBlockSub *event.TypeMuxSubscription //:来自miner的新挖区块
 
 	whitelist map[uint64]common.Hash
 
 	// channels for fetcher, syncer, txsyncLoop
-	newPeerCh   chan *peer
-	txsyncCh    chan *txsync
+	newPeerCh   chan *peer   //:新节点加入
+	txsyncCh    chan *txsync //:新节点连接时的交易同步
 	quitSync    chan struct{}
 	noMorePeers chan struct{}
 

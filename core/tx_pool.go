@@ -402,7 +402,7 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 		oldNum := oldHead.Number.Uint64()
 		newNum := newHead.Number.Uint64()
 
-		//:新旧链区块头差64以上，则所有交易不必退回交易池
+		//:新旧链区块头差64以上，则放弃对此区块的处理
 		if depth := uint64(math.Abs(float64(oldNum) - float64(newNum))); depth > 64 {
 			log.Debug("Skipping deep transaction reorg", "depth", depth)
 		} else {
@@ -451,6 +451,7 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 		}
 	}
 	// Initialize the internal state to the current head
+	//:从链更新区块头
 	if newHead == nil {
 		newHead = pool.chain.CurrentBlock().Header() // Special case during testing
 	}
@@ -468,10 +469,11 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	//:三、把旧链回退且新链不存在的tx放回交易池
 	// Inject any transactions discarded due to reorgs
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
+	//:平行解签并将解签结果存入缓存，提升交易执行时的验签效率
 	senderCacher.recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
 
-	//:四、交易降级
+	//:四、交易降级，pending中nonce不可被执行的交易转存入queue
 	// validate the pool of pending transactions, this will remove
 	// any transactions that have been included in the block or
 	// have been invalidated because of another transaction (e.g.
@@ -479,7 +481,7 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	pool.demoteUnexecutables()
 
 	// Update all accounts to the latest known pending nonce
-	//:更新所有地址的nonce
+	//:更新所有地址的pendingState nonce
 	for addr, list := range pool.pending {
 		txs := list.Flatten() // Heavy but will be cached and is needed by the miner anyway
 		pool.pendingState.SetNonce(addr, txs[len(txs)-1].Nonce()+1)
@@ -756,12 +758,15 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 		return false, err
 	}
 	// Mark local addresses and journal local transactions
+	//:如果交易来自local节点的rpc，记录此交易账户为local账户
 	if local {
 		if !pool.locals.contains(from) {
 			log.Info("Setting new local account", "address", from)
 			pool.locals.add(from)
 		}
 	}
+
+	//:持久化交易到journal文件
 	pool.journalTx(from, tx)
 
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())

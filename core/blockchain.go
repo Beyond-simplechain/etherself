@@ -133,9 +133,9 @@ type BlockChain struct {
 	//:InsertReceiptChain、InsertHeaderChain、insertChain、WriteBlockWithoutState、WriteBlockWithState、writeHeader
 	wg sync.WaitGroup // chain processing wait group for shutting down
 
-	engine    consensus.Engine
-	processor Processor // block processor interface
-	validator Validator // block and state validator interface
+	engine    consensus.Engine //:共识引擎
+	processor Processor        // block processor interface
+	validator Validator        // block and state validator interface
 	vmConfig  vm.Config
 
 	badBlocks      *lru.Cache              // Bad block cache //:错误的blocks，来自DAO
@@ -970,7 +970,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	//:二、将区块header和body写入数据库，header key为'h'+num+hash，body key为'b'+num+hash
 	rawdb.WriteBlock(bc.db, block)
 
-	//:三、提交新stateDB到数据库
+	//:三、提交stateDB，内存持久化落盘
 	root, err := state.Commit(bc.chainConfig.IsEIP158(block.Number()))
 	if err != nil {
 		return NonStatTy, err

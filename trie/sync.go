@@ -74,8 +74,8 @@ func newSyncMemBatch() *syncMemBatch {
 type Sync struct {
 	database DatabaseReader           // Persistent database to check for existing entries
 	membatch *syncMemBatch            // Memory buffer to avoid frequent database writes
-	requests map[common.Hash]*request // Pending requests pertaining to a key hash
-	queue    *prque.Prque             // Priority queue with the pending requests
+	requests map[common.Hash]*request //:保存所有request Pending requests pertaining to a key hash
+	queue    *prque.Prque             //:request哈希关于trieNode节点深度优先队列 Priority queue with the pending requests
 }
 
 // NewSync creates a new trie data download scheduler.
@@ -208,7 +208,9 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 			committed = true
 			continue
 		}
+		//:此request需要依赖deps个子节点request请求完成
 		request.deps += len(requests)
+		//:将所有子节点请求加入到请求队列中
 		for _, child := range requests {
 			s.schedule(child)
 		}
@@ -218,7 +220,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 
 // Commit flushes the data stored in the internal membatch out to persistent
 // storage, returning the number of items written and any occurred error.
-//:将membatch全部写到diskDB
+//:将membatch全部写到diskDB，然后清空membatch
 func (s *Sync) Commit(dbw ethdb.Putter) (int, error) {
 	// Dump the membatch into a database dbw
 	for i, key := range s.membatch.order {
@@ -263,12 +265,12 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 	children := []child{}
 
 	switch node := (object).(type) {
-	case *shortNode:
+	case *shortNode: //:子节点加入valueNode(叶子节点)或hashnode(扩展节点)
 		children = []child{{
 			node:  node.Val,
 			depth: req.depth + len(node.Key),
 		}}
-	case *fullNode:
+	case *fullNode: //:是分支节点，将分支上最多16个节点加入到子节点列表
 		for i := 0; i < 17; i++ {
 			if node.Children[i] != nil {
 				children = append(children, child{
@@ -284,6 +286,7 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 	requests := make([]*request, 0, len(children))
 	for _, child := range children {
 		// Notify any external watcher of a new key/value node
+		//:如果是叶子节点，调用callback
 		if req.callback != nil {
 			if node, ok := (child.node).(valueNode); ok {
 				if err := req.callback(node, req.hash); err != nil {
@@ -292,6 +295,7 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 			}
 		}
 		// If the child references another node, resolve or schedule
+		//:是扩展节点，将子节点hashnode生成新的request
 		if node, ok := (child.node).(hashNode); ok {
 			// Try to resolve the node from the local database
 			hash := common.BytesToHash(node)
@@ -318,13 +322,14 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 // committed themselves.
 func (s *Sync) commit(req *request) (err error) {
 	// Write the node content to the membatch
-	//:将node写到membatch
+	//:将node数据写到membatch
 	s.membatch.batch[req.hash] = req.data
 	s.membatch.order = append(s.membatch.order, req.hash)
 
 	delete(s.requests, req.hash)
 
 	// Check all parents for completion
+	//:父节点dep--，减到0就提递归交父区块
 	for _, parent := range req.parents {
 		parent.deps--
 		if parent.deps == 0 {

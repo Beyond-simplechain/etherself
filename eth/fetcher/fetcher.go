@@ -111,7 +111,6 @@ type Fetcher struct {
 	notify chan *announce //:收到区块hash的通道
 	inject chan *inject   //:收到完整区块的通道
 
-	blockFilter  chan chan []*types.Block
 	headerFilter chan chan *headerFilterTask //:header过滤，拿走fetcher能处理的header
 	bodyFilter   chan chan *bodyFilterTask
 
@@ -152,7 +151,6 @@ func New(getBlock blockRetrievalFn, verifyHeader headerVerifierFn, broadcastBloc
 	return &Fetcher{
 		notify:         make(chan *announce),
 		inject:         make(chan *inject),
-		blockFilter:    make(chan chan []*types.Block),
 		headerFilter:   make(chan chan *headerFilterTask),
 		bodyFilter:     make(chan chan *bodyFilterTask),
 		done:           make(chan common.Hash),
@@ -459,7 +457,7 @@ func (f *Fetcher) loop() {
 
 			// Split the batch of headers into unknown ones (to return to the caller),
 			// known incomplete ones (requiring body retrievals) and completed blocks.
-			//:unknown<-不是fetcher请求的(需要返回给handler)，incomplete<-还需要获取body的，complete<-没有uncle和tx有头就够的
+			//:unknown<-不是fetcher请求的(需要返回给handler)，incomplete<-还需要获取body的，complete<-空区块，没有uncle和tx有头就够的
 			unknown, incomplete, complete := []*types.Header{}, []*announce{}, []*types.Block{}
 			for _, header := range task.headers {
 				hash := header.Hash()
@@ -549,7 +547,7 @@ func (f *Fetcher) loop() {
 				// Match up a body to any possible completion request
 				matched := false
 
-				//:遍历所有保存的请求，因为tx和uncle，不知道它是属于哪个区块的，只能去遍历所有的请求
+				//:遍历所有保存的请求，因为tx和uncle，不知道它是属于哪个区块的，只能去遍历所有的请求，通过DeriveSha求的hash进行比对
 				for hash, announce := range f.completing {
 					if f.queued[hash] == nil {
 						//:把传入的每个块的hash和unclehash和它请求出去的记录进行对比，匹配则说明是fetcher请求的区块body
@@ -583,6 +581,7 @@ func (f *Fetcher) loop() {
 
 			bodyFilterOutMeter.Mark(int64(len(task.transactions)))
 			select {
+			//:从task中剩余未匹配的数据返回
 			case filter <- task:
 			case <-f.quit:
 				return
@@ -721,6 +720,7 @@ func (f *Fetcher) insert(peer string, block *types.Block) {
 
 // forgetHash removes all traces of a block announcement from the fetcher's
 // internal state.
+//:删除此hash在Fetcher中的所有记录
 func (f *Fetcher) forgetHash(hash common.Hash) {
 	// Remove all pending announces and decrement DOS counters
 	for _, announce := range f.announced[hash] {
@@ -763,6 +763,7 @@ func (f *Fetcher) forgetHash(hash common.Hash) {
 
 // forgetBlock removes all traces of a queued block from the fetcher's internal
 // state.
+//:删除队列中待插入的区块
 func (f *Fetcher) forgetBlock(hash common.Hash) {
 	if insert := f.queued[hash]; insert != nil {
 		f.queues[insert.origin]--
