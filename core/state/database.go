@@ -18,7 +18,6 @@ package state
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/debug.prints"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -173,7 +172,6 @@ type cachedTrie struct {
 }
 
 func (m cachedTrie) Commit(onleaf trie.LeafCallback) (common.Hash, error) {
-	debugutils.Println("trie", "cachedTrie Commit")
 	root, err := m.SecureTrie.Commit(onleaf)
 	if err == nil {
 		m.db.pushTrie(m.SecureTrie)

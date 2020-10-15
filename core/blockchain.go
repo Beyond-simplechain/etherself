@@ -113,8 +113,9 @@ type BlockChain struct {
 	procmu  sync.RWMutex // block processor lock
 
 	checkpoint       int          // checkpoint counts towards the new checkpoint
+	//:fast模式同步时，插入区块更新currentFastBlock，直到插入pivot块时，才会更新currentBlock
 	currentBlock     atomic.Value //:当前规范链的头区块 Current head of the block chain
-	currentFastBlock atomic.Value //:快速同步模式的头区块，可能比主链长？ Current head of the fast-sync chain (may be above the block chain!)
+	currentFastBlock atomic.Value //:快速同步模式的头区块，可能比主链长！ Current head of the fast-sync chain (may be above the block chain!)
 
 	//:cachingDB
 	stateCache    state.Database // State database to reuse between imports (contains state cache)
@@ -836,7 +837,7 @@ func SetReceiptsData(config *params.ChainConfig, block *types.Block, receipts ty
 
 // InsertReceiptChain attempts to complete an already existing header chain with
 // transaction and receipt data.
-//:call fy Downloader.fastSync
+//:call by Downloader.fastSync
 func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain []types.Receipts) (int, error) {
 	bc.wg.Add(1)
 	defer bc.wg.Done()
@@ -873,11 +874,12 @@ func (bc *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain [
 			continue
 		}
 		// Compute all the non-consensus fields of the receipts
-		//:用block.transactions填充recepts
+		//:用填充recepts字段
 		if err := SetReceiptsData(bc.chainConfig, block, receipts); err != nil {
 			return i, fmt.Errorf("failed to set receipts data: %v", err)
 		}
 		// Write all the data out into the database
+		//:持久化区块落盘
 		rawdb.WriteBody(batch, block.Hash(), block.NumberU64(), block.Body())
 		rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
 		rawdb.WriteTxLookupEntries(batch, block)
@@ -929,7 +931,7 @@ var lastWrite uint64
 // WriteBlockWithoutState writes only the block and its metadata to the database,
 // but does not write any state. This is used to construct competing side forks
 // up to the point where they exceed the canonical total difficulty.
-//:call when InsertSideChain
+//:call when InsertSideChain，对于分叉链，只保持块数据，不执行区块提交state
 func (bc *BlockChain) WriteBlockWithoutState(block *types.Block, td *big.Int) (err error) {
 	bc.wg.Add(1)
 	defer bc.wg.Done()
@@ -978,16 +980,19 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 	triedb := bc.stateCache.TrieDB()
 
 	// If we're running an archive node, always flush
+	//:archive模式无缓存，直接提交state到diskdb
 	if bc.cacheConfig.Disabled {
 		if err := triedb.Commit(root, false); err != nil {
 			return NonStatTy, err
 		}
 	} else {
 		// Full but not archive node, do proper garbage collection
+		//:添加此trie子树的引用，防止trie在内存中无引用被GC
 		triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
 		bc.triegc.Push(root, -int64(block.NumberU64()))
 
-		//:缓存的trie超出了缓存内存上限，提交trie并移除之
+		//:1.缓存的trie超出了缓存内存上限，抛弃陈旧的state，并且解除triedb对此子树的引用，让GC回收
+		//:2.如果距离上次提交超过TrieTimeLimit时间，提交缓存内所有state到diskdb
 		if current := block.NumberU64(); current > triesInMemory {
 			// If we exceeded our memory allowance, flush matured singleton nodes to disk
 			var (
@@ -1066,6 +1071,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 		// Write the positional metadata for transaction/receipt lookups and preimages
 		//:写入交易查询入口信息
 		rawdb.WriteTxLookupEntries(batch, block)
+		//:写入调试信息(如果geth开启vmdebug时虚拟机调用会写入preimages)
 		rawdb.WritePreimages(batch, state.Preimages())
 
 		status = CanonStatTy
@@ -1097,6 +1103,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 // accepted for future processing, and returns an error if the block is too far
 // ahead and was not added.
 func (bc *BlockChain) addFutureBlock(block *types.Block) error {
+	//:缓存本地时间30秒的未来区块
 	max := uint64(time.Now().Unix() + maxTimeFutureBlocks)
 	if block.Time() > max {
 		return fmt.Errorf("future block timestamp %v > allowed %v", block.Time(), max)

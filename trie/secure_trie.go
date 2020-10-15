@@ -18,8 +18,6 @@ package trie
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/debug.prints"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -142,7 +140,6 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 // Committing flushes nodes from memory. Subsequent Get calls will load nodes
 // from the database.
 func (t *SecureTrie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
-	debugutils.Println("trie", "SecureTrie Commit")
 	// Write all the pre-images to the actual disk database
 	if len(t.getSecKeyCache()) > 0 {
 		t.trie.db.lock.Lock()

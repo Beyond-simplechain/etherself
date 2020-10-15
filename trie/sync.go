@@ -86,6 +86,7 @@ func NewSync(root common.Hash, database DatabaseReader, callback LeafCallback) *
 		requests: make(map[common.Hash]*request),
 		queue:    prque.New(nil),
 	}
+	//:从root节点开始，递归构造MPT树子节点的请求
 	ts.AddSubTrie(root, 0, common.Hash{}, callback)
 	return ts
 }
@@ -111,6 +112,7 @@ func (s *Sync) AddSubTrie(root common.Hash, depth int, parent common.Hash, callb
 		callback: callback,
 	}
 	// If this sub-trie has a designated parent, link them together
+	//:子节点请求时父节点deps++
 	if parent != (common.Hash{}) {
 		ancestor := s.requests[parent]
 		if ancestor == nil {
@@ -182,7 +184,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 			return committed, i, ErrAlreadyProcessed
 		}
 		// If the item is a raw entry request, commit directly
-		//:是raw则表示该trie节点为valuenode或hashnode，所以不存在children，直接提交
+		//:是raw则表示该trie节点为valuenode，不存在children，且存储的是合约Code不需要进行解码，直接提交之
 		if request.raw {
 			request.data = item.Data
 			s.commit(request)

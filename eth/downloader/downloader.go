@@ -20,13 +20,12 @@ package downloader
 import (
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/debug.prints"
+	"github.com/ethereum/go-ethereum"
 	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -1588,7 +1587,6 @@ func (d *Downloader) importBlockResults(results []*fetchResult) error {
 		blocks[i] = types.NewBlockWithHeader(result.Header).WithBody(result.Transactions, result.Uncles)
 	}
 
-	debugutils.Println("InsertChain", "Insert BlockChain by Downloader")
 	if index, err := d.blockchain.InsertChain(blocks); err != nil {
 		if index < len(results) {
 			log.Debug("Downloaded item processing failed", "number", results[index].Header.Number, "hash", results[index].Header.Hash(), "err", err)
@@ -1613,7 +1611,7 @@ func (d *Downloader) processFastSyncContent(latest *types.Header) error {
 	stateSync := d.syncState(latest.Root)
 	defer stateSync.Cancel()
 	go func() {
-		//:异步等待state同步完成
+		//:异步等待latest.Root下MPT树所有子节点同步完成
 		if err := stateSync.Wait(); err != nil && err != errCancelStateFetch {
 			d.queue.Close() // wake up Results
 		}
@@ -1732,6 +1730,7 @@ func (d *Downloader) commitFastSyncData(results []*fetchResult, stateSync *state
 	select {
 	case <-d.quitCh:
 		return errCancelContentProcessing
+	//:阻塞等待stateSync完成
 	case <-stateSync.done:
 		if err := stateSync.Wait(); err != nil {
 			return err

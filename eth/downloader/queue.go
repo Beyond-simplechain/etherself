@@ -360,7 +360,7 @@ func (q *queue) Results(block bool) []*fetchResult {
 	defer q.lock.Unlock()
 
 	// Count the number of items available for processing
-	//:获取resultCache中已经同步完成的最后一个区块的index：[✅,✅,✅,❌，✅]时，下表为2
+	//:获取resultCache中已经同步完成的最后一个区块的index：[O,O,O,X,O]时，index为2
 	nproc := q.countProcessableItems()
 	for nproc == 0 && !q.closed {
 		if !block {

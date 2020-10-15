@@ -134,15 +134,17 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 			return nil
 
 		// Send the next finished request to the current sync:
+		//:将新同步到的nodeData投递到deliverReqCh(即s.deliver)
 		//:只有在deliverReqCh不为空，即存在finished才会把收个finish投递到s.deliver<chan *stateReq>
 		case deliverReqCh <- deliverReq:
 			// Shift out the first request, but also set the emptied slot to nil for GC
+			//:删除finished[0]
 			copy(finished, finished[1:])
 			finished[len(finished)-1] = nil
 			finished = finished[:len(finished)-1]
 
 		// Handle incoming state packs:
-		//:从peer获取stateDb数据投递到stateSync.deliver
+		//:DeliverNodeData从peer获取stateDb数据投递到stateSync.deliver
 		case pack := <-d.stateCh:
 			// Discard any data not requested (or previously timed out)
 			req := active[pack.PeerId()]
@@ -160,6 +162,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 		// Handle dropped peer connections:
 		case p := <-peerDrop:
 			// Skip if no request is currently pending
+			//:删除节点，将正在请求的req放回finished
 			req := active[p.id]
 			if req == nil {
 				continue
@@ -176,6 +179,7 @@ func (d *Downloader) runStateSync(s *stateSync) *stateSync {
 			// If the peer is already requesting something else, ignore the stale timeout.
 			// This can happen when the timeout and the delivery happens simultaneously,
 			// causing both pathways to trigger.
+			//:请求超时的req放回finished
 			if active[req.peer.id] != req {
 				continue
 			}
@@ -258,6 +262,7 @@ func newStateSync(d *Downloader, root common.Hash) *stateSync {
 // finish.
 func (s *stateSync) run() {
 	s.err = s.loop()
+	//:同步完root节点下所有子树节点后，发送done信号
 	close(s.done)
 }
 
@@ -299,6 +304,7 @@ func (s *stateSync) loop() (err error) {
 		if err = s.commit(false); err != nil {
 			return err
 		}
+		//:向空闲peer发送GetNodeData请求
 		s.assignTasks()
 		// Tasks assigned, wait for something to happen
 		select {
@@ -362,6 +368,7 @@ func (s *stateSync) assignTasks() {
 		// Assign a batch of fetches proportional to the estimated latency/bandwidth
 		cap := p.NodeDataCapacity(s.d.requestRTT())
 		req := &stateReq{peer: p, timeout: s.d.requestTTL()}
+		//:从task中查找未请求过的req随机向peers请求
 		s.fillTasks(cap, req)
 
 		// If the peer was assigned tasks to fetch, send the network request
@@ -381,6 +388,7 @@ func (s *stateSync) assignTasks() {
 // tasks to send to the remote peer.
 func (s *stateSync) fillTasks(n int, req *stateReq) {
 	// Refill available tasks from the scheduler.
+	//:将请求队列中的任务存入tasks中
 	if len(s.tasks) < n {
 		new := s.sched.Missing(n - len(s.tasks))
 		for _, hash := range new {
@@ -390,6 +398,7 @@ func (s *stateSync) fillTasks(n int, req *stateReq) {
 	// Find tasks that haven't been tried with the request's peer.
 	req.items = make([]common.Hash, 0, n)
 	req.tasks = make(map[common.Hash]*stateTask, n)
+	//:填充完毕req后删除task
 	for hash, t := range s.tasks {
 		// Stop when we've gathered enough requests
 		if len(req.items) == n {

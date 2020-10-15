@@ -197,6 +197,7 @@ func (p *peerConnection) FetchReceipts(request *fetchRequest) error {
 
 	// Convert the header set to a retrievable slice
 	hashes := make([]common.Hash, 0, len(request.Headers))
+
 	for _, header := range request.Headers {
 		hashes = append(hashes, header.Hash())
 	}
